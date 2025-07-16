@@ -1,6 +1,7 @@
 variable "project_id" {
   description = "GCP Project ID"
   type        = string
+  default     = "fabled-web-172810"
 }
 
 variable "region" {
@@ -18,6 +19,7 @@ variable "zone" {
 variable "alert_email" {
   description = "Email address for alerts"
   type        = string
+  default     = "mohammedhasssan3390515@gmail.com"
 }
 
 variable "environment" {
