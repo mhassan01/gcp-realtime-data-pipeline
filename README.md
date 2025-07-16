@@ -25,7 +25,6 @@ A comprehensive, production-ready real-time data pipeline solution built on Goog
                        │   (Auto Tables) │      │   YYYY/MM/DD/HH │
                        └─────────────────┘      └─────────────────┘
 ```
-
 ### Core Components
 
 | Component | Technology | Purpose |
