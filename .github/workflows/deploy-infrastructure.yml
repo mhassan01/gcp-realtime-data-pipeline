@@ -6,21 +6,12 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Environment to deploy'
-        required: true
-        default: 'dev'
-        type: choice
-        options:
-        - dev
-        - staging
-        - prod
 
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
   REGION: us-central1
+  ENVIRONMENT: dev
 
 jobs:
   terraform-plan:
@@ -57,7 +48,7 @@ jobs:
       run: terraform plan -out=tfplan
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+        TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
     - name: Upload Terraform Plan
       uses: actions/upload-artifact@v4
@@ -119,7 +110,7 @@ jobs:
         # Attempt to retry with import for conflicting resources
         echo "Attempting to import conflicting resources and retry..."
         
-        ENV="${{ github.event.inputs.environment || 'dev' }}"
+        ENV="${{ env.ENVIRONMENT }}"
         PROJECT_ID="${{ env.PROJECT_ID }}"
         
         # Import existing resources to resolve conflicts
@@ -136,7 +127,7 @@ jobs:
       continue-on-error: false
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+        TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
   deploy-cloud-function:
     name: Deploy Cloud Function
@@ -159,7 +150,7 @@ jobs:
     - name: Deploy Cloud Function
       run: |
         chmod +x ./scripts/deploy-cloud-function.sh
-        ./scripts/deploy-cloud-function.sh ${{ env.PROJECT_ID }} ${{ github.event.inputs.environment || 'dev' }}
+        ./scripts/deploy-cloud-function.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
 
     - name: Update Cloud Function via Terraform
       working-directory: ./terraform
@@ -168,7 +159,7 @@ jobs:
         terraform apply -auto-approve
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+        TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
   deploy-event-generator:
     name: Deploy Event Generator Service
@@ -191,12 +182,12 @@ jobs:
     - name: Deploy Event Generator to Cloud Run
       run: |
         chmod +x ./scripts/deploy-event-generator.sh
-        ./scripts/deploy-event-generator.sh ${{ env.PROJECT_ID }} ${{ github.event.inputs.environment || 'dev' }} ${{ env.REGION }}
+        ./scripts/deploy-event-generator.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
     - name: Test Event Generator Service
       run: |
         # Get service URL from terraform output or gcloud
-        SERVICE_NAME="${{ github.event.inputs.environment || 'dev' }}-event-generator"
+        SERVICE_NAME="${{ env.ENVIRONMENT }}-event-generator"
         SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=${{ env.REGION }} --format="value(status.url)")
         
         echo "Testing Event Generator service at: $SERVICE_URL"
@@ -236,7 +227,7 @@ jobs:
     - name: Build and Deploy Dataflow Template
       run: |
         chmod +x ./scripts/deploy-dataflow-template.sh
-        ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ github.event.inputs.environment || 'dev' }} ${{ env.REGION }}
+        ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
     - name: Deploy Dataflow Job via Terraform
       working-directory: ./terraform
@@ -245,7 +236,7 @@ jobs:
         terraform apply -auto-approve
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+        TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
   test-pipeline:
     name: Test Data Pipeline
@@ -271,16 +262,16 @@ jobs:
     - name: Run Integration Tests
       run: |
         chmod +x ./scripts/test-table-creation.sh
-        ./scripts/test-table-creation.sh ${{ env.PROJECT_ID }} ${{ github.event.inputs.environment || 'dev' }}
+        ./scripts/test-table-creation.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
 
     - name: Verify Dataflow Job
       run: |
-        JOB_NAME="${{ github.event.inputs.environment || 'dev' }}-realtime-data-pipeline"
+        JOB_NAME="${{ env.ENVIRONMENT }}-realtime-data-pipeline"
         gcloud dataflow jobs list --region=${{ env.REGION }} --filter="name:${JOB_NAME}" --format="value(id)" | head -1
 
     - name: Check BigQuery Tables
       run: |
-        DATASET="${{ github.event.inputs.environment || 'dev' }}_events_dataset"
+        DATASET="${{ env.ENVIRONMENT }}_events_dataset"
         bq ls --project_id=${{ env.PROJECT_ID }} $DATASET
 
   cleanup-on-failure:
@@ -309,14 +300,7 @@ jobs:
     - name: Get Environment
       id: env
       run: |
-        ENV="${{ github.event.inputs.environment }}"
-        if [ -z "$ENV" ]; then
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            ENV="prod"
-          else
-            ENV="dev"
-          fi
-        fi
+        ENV="${{ env.ENVIRONMENT }}"
         echo "environment=$ENV" >> $GITHUB_OUTPUT
         echo "Detected environment: $ENV"
 
@@ -371,7 +355,7 @@ jobs:
         PROJECT_ID="${{ env.PROJECT_ID }}"
         REGION="${{ env.REGION }}"
         
-        echo "🔄 Running manual cleanup as fallback..."
+        echo "🔄 Running manual cleanup as fallback for demo environment..."
         
         # Stop and delete Dataflow jobs
         echo "Cleaning up Dataflow jobs..."
@@ -396,20 +380,16 @@ jobs:
         gcloud pubsub topics delete "$ENV-backend-events-topic" || true
         gcloud pubsub topics delete "$ENV-backend-events-dead-letter" || true
         
-        # Delete BigQuery dataset (only for dev environment)
-        if [ "$ENV" = "dev" ]; then
-          echo "Cleaning up BigQuery dataset (dev only)..."
-          bq rm -r -f -d "$PROJECT_ID:${ENV}_events_dataset" || true
-        fi
+        # Delete BigQuery dataset (demo environment)
+        echo "Cleaning up BigQuery dataset..."
+        bq rm -r -f -d "$PROJECT_ID:${ENV}_events_dataset" || true
         
-        # Delete Cloud Storage buckets (only for dev environment)
-        if [ "$ENV" = "dev" ]; then
-          echo "Cleaning up Cloud Storage buckets (dev only)..."
-          gsutil -m rm -r "gs://$PROJECT_ID-$ENV-raw-events" || true
-          gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-temp" || true
-          gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-templates" || true
-          gsutil -m rm -r "gs://$PROJECT_ID-$ENV-function-source" || true
-        fi
+        # Delete Cloud Storage buckets (demo environment)
+        echo "Cleaning up Cloud Storage buckets..."
+        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-raw-events" || true
+        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-temp" || true
+        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-templates" || true
+        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-function-source" || true
         
         # Delete Container Registry images
         echo "Cleaning up Container Registry images..."
@@ -417,23 +397,22 @@ jobs:
           gcloud container images delete $image --force-delete-tags --quiet || true
         done
         
-        # Delete service accounts (only for dev environment)
-        if [ "$ENV" = "dev" ]; then
-          echo "Cleaning up service accounts (dev only)..."
-          gcloud iam service-accounts delete "$ENV-dataflow-pipeline-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
-          gcloud iam service-accounts delete "$ENV-table-manager-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
-          gcloud iam service-accounts delete "$ENV-event-generator-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
-        fi
+        # Delete service accounts (demo environment)
+        echo "Cleaning up service accounts..."
+        gcloud iam service-accounts delete "$ENV-dataflow-pipeline-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
+        gcloud iam service-accounts delete "$ENV-table-manager-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
+        gcloud iam service-accounts delete "$ENV-event-generator-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
         
-        echo "🏁 Manual cleanup completed"
+        echo "🏁 Manual cleanup completed for demo environment"
       continue-on-error: true
 
     - name: Cleanup Summary
       if: always()
       run: |
         ENV="${{ steps.env.outputs.environment }}"
-        echo "🔍 Cleanup Summary for environment: $ENV"
+        echo "🔍 Demo Project Cleanup Summary"
         echo "============================================="
+        echo "Environment: $ENV (demo only)"
         echo "✅ Comprehensive cleanup script executed"
         echo "✅ Manual fallback cleanup executed"
         echo "⚠️  Some resources may require manual intervention"
@@ -445,4 +424,4 @@ jobs:
         echo "  gcloud pubsub topics list"
         echo "  gcloud iam service-accounts list"
         echo ""
-        echo "📧 Please review your GCP console and billing to ensure all resources are cleaned up" 
+        echo "📧 Please review your GCP console and billing to ensure all demo resources are cleaned up" 
