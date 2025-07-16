@@ -102,6 +102,42 @@ jobs:
       working-directory: ./terraform
       run: terraform apply -auto-approve tfplan
 
+    - name: Handle IAM Permission Issues
+      if: failure()
+      working-directory: ./terraform
+      run: |
+        echo "🔍 Diagnosing IAM permission issues..."
+        
+        # Check current user permissions
+        echo "Current authenticated user:"
+        gcloud auth list --filter=status:ACTIVE --format="value(account)"
+        
+        # Check service account permissions
+        echo "Checking service account permissions:"
+        gcloud projects get-iam-policy ${{ env.PROJECT_ID }} --flatten="bindings[].members" --format='table(bindings.role)' --filter="bindings.members:*${{ env.PROJECT_ID }}*"
+        
+        # Attempt to retry with import for conflicting resources
+        echo "Attempting to import conflicting resources and retry..."
+        
+        ENV="${{ github.event.inputs.environment || 'dev' }}"
+        PROJECT_ID="${{ env.PROJECT_ID }}"
+        
+        # Import existing resources to resolve conflicts
+        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_pubsub_topic.backend_events "projects/$PROJECT_ID/topics/$ENV-backend-events-topic" || true
+        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_pubsub_topic.dead_letter "projects/$PROJECT_ID/topics/$ENV-backend-events-dead-letter" || true
+        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_bigquery_dataset.events_dataset "projects/$PROJECT_ID/datasets/${ENV}_events_dataset" || true
+        
+        # Try applying again
+        echo "Retrying terraform apply after imports..."
+        terraform apply -auto-approve || {
+          echo "❌ Terraform apply failed again. Triggering cleanup..."
+          exit 1
+        }
+      continue-on-error: false
+      env:
+        TF_VAR_project_id: ${{ env.PROJECT_ID }}
+        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+
   deploy-cloud-function:
     name: Deploy Cloud Function
     runs-on: ubuntu-latest
@@ -251,7 +287,7 @@ jobs:
     name: Cleanup on Failure
     runs-on: ubuntu-latest
     needs: [terraform-apply, deploy-cloud-function, deploy-event-generator, build-dataflow-template, test-pipeline]
-    if: failure() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
+    if: failure()
     
     steps:
     - name: Checkout code
@@ -262,19 +298,151 @@ jobs:
       with:
         credentials_json: ${{ env.GCP_SA_KEY }}
 
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
         terraform_version: 1.5.7
 
-    - name: Terraform Init
+    - name: Get Environment
+      id: env
+      run: |
+        ENV="${{ github.event.inputs.environment }}"
+        if [ -z "$ENV" ]; then
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            ENV="prod"
+          else
+            ENV="dev"
+          fi
+        fi
+        echo "environment=$ENV" >> $GITHUB_OUTPUT
+        echo "Detected environment: $ENV"
+
+    - name: Initialize Terraform for Cleanup
       working-directory: ./terraform
       run: terraform init
+      continue-on-error: true
 
-    - name: Terraform Destroy (Development Only)
+    - name: Import Existing Resources (Handle Conflicts)
       working-directory: ./terraform
-      if: github.event.inputs.environment == 'dev' || github.ref == 'refs/heads/dev'
-      run: terraform destroy -auto-approve
-      env:
-        TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }} 
+      run: |
+        ENV="${{ steps.env.outputs.environment }}"
+        PROJECT_ID="${{ env.PROJECT_ID }}"
+        
+        echo "Attempting to import existing resources to handle conflicts..."
+        
+        # Import Pub/Sub topics if they exist
+        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" \
+          google_pubsub_topic.backend_events \
+          "projects/$PROJECT_ID/topics/$ENV-backend-events-topic" || true
+          
+        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" \
+          google_pubsub_topic.dead_letter \
+          "projects/$PROJECT_ID/topics/$ENV-backend-events-dead-letter" || true
+          
+        # Import BigQuery dataset if it exists
+        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" \
+          google_bigquery_dataset.events_dataset \
+          "projects/$PROJECT_ID/datasets/${ENV}_events_dataset" || true
+          
+        echo "Import completed (errors expected for non-existing resources)"
+      continue-on-error: true
+
+    - name: Run Comprehensive Cleanup
+      run: |
+        chmod +x ./scripts/cleanup-all-resources.sh
+        
+        ENV="${{ steps.env.outputs.environment }}"
+        PROJECT_ID="${{ env.PROJECT_ID }}"
+        
+        echo "🧹 Starting comprehensive cleanup for environment: $ENV"
+        echo "Project ID: $PROJECT_ID"
+        
+        # Run our comprehensive cleanup script
+        ./scripts/cleanup-all-resources.sh --auto-approve --project-id="$PROJECT_ID" --environment="$ENV"
+      continue-on-error: true
+
+    - name: Manual Resource Cleanup (Fallback)
+      if: always()
+      run: |
+        ENV="${{ steps.env.outputs.environment }}"
+        PROJECT_ID="${{ env.PROJECT_ID }}"
+        REGION="${{ env.REGION }}"
+        
+        echo "🔄 Running manual cleanup as fallback..."
+        
+        # Stop and delete Dataflow jobs
+        echo "Cleaning up Dataflow jobs..."
+        gcloud dataflow jobs list --region=$REGION --filter="name:$ENV-realtime-data-pipeline" --format="value(id)" | while read job_id; do
+          if [ ! -z "$job_id" ]; then
+            echo "Stopping Dataflow job: $job_id"
+            gcloud dataflow jobs cancel $job_id --region=$REGION || true
+          fi
+        done
+        
+        # Delete Cloud Run services
+        echo "Cleaning up Cloud Run services..."
+        gcloud run services delete "$ENV-event-generator" --region=$REGION --quiet || true
+        
+        # Delete Cloud Functions
+        echo "Cleaning up Cloud Functions..."
+        gcloud functions delete "$ENV-table-manager" --region=$REGION --quiet || true
+        
+        # Delete Pub/Sub topics and subscriptions
+        echo "Cleaning up Pub/Sub resources..."
+        gcloud pubsub subscriptions delete "$ENV-backend-events-subscription" || true
+        gcloud pubsub topics delete "$ENV-backend-events-topic" || true
+        gcloud pubsub topics delete "$ENV-backend-events-dead-letter" || true
+        
+        # Delete BigQuery dataset (only for dev environment)
+        if [ "$ENV" = "dev" ]; then
+          echo "Cleaning up BigQuery dataset (dev only)..."
+          bq rm -r -f -d "$PROJECT_ID:${ENV}_events_dataset" || true
+        fi
+        
+        # Delete Cloud Storage buckets (only for dev environment)
+        if [ "$ENV" = "dev" ]; then
+          echo "Cleaning up Cloud Storage buckets (dev only)..."
+          gsutil -m rm -r "gs://$PROJECT_ID-$ENV-raw-events" || true
+          gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-temp" || true
+          gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-templates" || true
+          gsutil -m rm -r "gs://$PROJECT_ID-$ENV-function-source" || true
+        fi
+        
+        # Delete Container Registry images
+        echo "Cleaning up Container Registry images..."
+        gcloud container images list --repository=gcr.io/$PROJECT_ID --format="value(name)" | grep -E "(event-generator|table-manager)" | while read image; do
+          gcloud container images delete $image --force-delete-tags --quiet || true
+        done
+        
+        # Delete service accounts (only for dev environment)
+        if [ "$ENV" = "dev" ]; then
+          echo "Cleaning up service accounts (dev only)..."
+          gcloud iam service-accounts delete "$ENV-dataflow-pipeline-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
+          gcloud iam service-accounts delete "$ENV-table-manager-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
+          gcloud iam service-accounts delete "$ENV-event-generator-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
+        fi
+        
+        echo "🏁 Manual cleanup completed"
+      continue-on-error: true
+
+    - name: Cleanup Summary
+      if: always()
+      run: |
+        ENV="${{ steps.env.outputs.environment }}"
+        echo "🔍 Cleanup Summary for environment: $ENV"
+        echo "============================================="
+        echo "✅ Comprehensive cleanup script executed"
+        echo "✅ Manual fallback cleanup executed"
+        echo "⚠️  Some resources may require manual intervention"
+        echo ""
+        echo "To verify cleanup completion, run:"
+        echo "  gcloud dataflow jobs list --region=${{ env.REGION }}"
+        echo "  gcloud run services list --region=${{ env.REGION }}"
+        echo "  gcloud functions list --region=${{ env.REGION }}"
+        echo "  gcloud pubsub topics list"
+        echo "  gcloud iam service-accounts list"
+        echo ""
+        echo "📧 Please review your GCP console and billing to ensure all resources are cleaned up" 
