@@ -1,0 +1,280 @@
+name: Deploy Real-time Data Pipeline Infrastructure
+
+on:
+  push:
+    branches: [ main, dev ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+  REGION: us-central1
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.7
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+
+    - name: Terraform Validate
+      working-directory: ./terraform
+      run: terraform validate
+
+    - name: Terraform Plan
+      working-directory: ./terraform
+      run: terraform plan -out=tfplan
+      env:
+        TF_VAR_project_id: ${{ env.PROJECT_ID }}
+        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+
+    - name: Upload Terraform Plan
+      uses: actions/upload-artifact@v4
+      with:
+        name: terraform-plan
+        path: terraform/tfplan
+
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.7
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Download Terraform Plan
+      uses: actions/download-artifact@v4
+      with:
+        name: terraform-plan
+        path: terraform/
+
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+
+    - name: Terraform Apply
+      working-directory: ./terraform
+      run: terraform apply -auto-approve tfplan
+
+  deploy-cloud-function:
+    name: Deploy Cloud Function
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Deploy Cloud Function
+      run: |
+        chmod +x ./scripts/deploy-cloud-function.sh
+        ./scripts/deploy-cloud-function.sh ${{ env.PROJECT_ID }} ${{ github.event.inputs.environment || 'dev' }}
+
+    - name: Update Cloud Function via Terraform
+      working-directory: ./terraform
+      run: |
+        terraform init
+        terraform apply -auto-approve
+      env:
+        TF_VAR_project_id: ${{ env.PROJECT_ID }}
+        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+
+  deploy-event-generator:
+    name: Deploy Event Generator Service
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Deploy Event Generator to Cloud Run
+      run: |
+        chmod +x ./scripts/deploy-event-generator.sh
+        ./scripts/deploy-event-generator.sh ${{ env.PROJECT_ID }} ${{ github.event.inputs.environment || 'dev' }} ${{ env.REGION }}
+
+    - name: Test Event Generator Service
+      run: |
+        # Get service URL from terraform output or gcloud
+        SERVICE_NAME="${{ github.event.inputs.environment || 'dev' }}-event-generator"
+        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=${{ env.REGION }} --format="value(status.url)")
+        
+        echo "Testing Event Generator service at: $SERVICE_URL"
+        
+        # Test health endpoint
+        curl -f "$SERVICE_URL/health" || exit 1
+        
+        # Test sample event generation
+        curl -f "$SERVICE_URL/sample/order" || exit 1
+        
+        # Test scenarios endpoint
+        curl -f "$SERVICE_URL/scenarios" || exit 1
+        
+        echo "✅ Event Generator service is healthy and responding"
+
+  build-dataflow-template:
+    name: Build and Deploy Dataflow Template
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, deploy-event-generator]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Configure Docker for GCR
+      run: gcloud auth configure-docker
+
+    - name: Build and Deploy Dataflow Template
+      run: |
+        chmod +x ./scripts/deploy-dataflow-template.sh
+        ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ github.event.inputs.environment || 'dev' }} ${{ env.REGION }}
+
+    - name: Deploy Dataflow Job via Terraform
+      working-directory: ./terraform
+      run: |
+        terraform init
+        terraform apply -auto-approve
+      env:
+        TF_VAR_project_id: ${{ env.PROJECT_ID }}
+        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }}
+
+  test-pipeline:
+    name: Test Data Pipeline
+    runs-on: ubuntu-latest
+    needs: [deploy-cloud-function, deploy-event-generator, build-dataflow-template]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Wait for Infrastructure
+      run: sleep 60  # Wait for services to be fully ready
+
+    - name: Run Integration Tests
+      run: |
+        chmod +x ./scripts/test-table-creation.sh
+        ./scripts/test-table-creation.sh ${{ env.PROJECT_ID }} ${{ github.event.inputs.environment || 'dev' }}
+
+    - name: Verify Dataflow Job
+      run: |
+        JOB_NAME="${{ github.event.inputs.environment || 'dev' }}-realtime-data-pipeline"
+        gcloud dataflow jobs list --region=${{ env.REGION }} --filter="name:${JOB_NAME}" --format="value(id)" | head -1
+
+    - name: Check BigQuery Tables
+      run: |
+        DATASET="${{ github.event.inputs.environment || 'dev' }}_events_dataset"
+        bq ls --project_id=${{ env.PROJECT_ID }} $DATASET
+
+  cleanup-on-failure:
+    name: Cleanup on Failure
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, deploy-cloud-function, deploy-event-generator, build-dataflow-template, test-pipeline]
+    if: failure() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.7
+
+    - name: Terraform Init
+      working-directory: ./terraform
+      run: terraform init
+
+    - name: Terraform Destroy (Development Only)
+      working-directory: ./terraform
+      if: github.event.inputs.environment == 'dev' || github.ref == 'refs/heads/dev'
+      run: terraform destroy -auto-approve
+      env:
+        TF_VAR_project_id: ${{ env.PROJECT_ID }}
+        TF_VAR_environment: ${{ github.event.inputs.environment || 'dev' }} 

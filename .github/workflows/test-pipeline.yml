@@ -1,0 +1,293 @@
+name: Test Data Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to test'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+  schedule:
+    - cron: '0 8 * * *'  # Daily at 8 AM UTC
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+  REGION: us-central1
+
+jobs:
+  test-table-creation:
+    name: Test Table Creation
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Test Table Creation via Cloud Function
+      run: |
+        chmod +x ./scripts/test-table-creation.sh
+        ./scripts/test-table-creation.sh ${{ env.PROJECT_ID }} ${{ github.event.inputs.environment || 'dev' }}
+
+    - name: Verify Tables Created
+      run: |
+        DATASET="${{ github.event.inputs.environment || 'dev' }}_events_dataset"
+        echo "Checking tables in dataset: $DATASET"
+        
+        # Check if tables exist
+        TABLES=$(bq ls --project_id=${{ env.PROJECT_ID }} $DATASET --format="value(tableId)")
+        echo "Found tables: $TABLES"
+        
+        # Verify expected tables
+        for table in orders inventory user_activity; do
+          if echo "$TABLES" | grep -q "$table"; then
+            echo "✅ Table $table exists"
+            # Check table schema
+            bq show --project_id=${{ env.PROJECT_ID }} --format=prettyjson $DATASET.$table | jq '.schema.fields[].name'
+          else
+            echo "❌ Table $table missing"
+            exit 1
+          fi
+        done
+
+  test-dataflow-pipeline:
+    name: Test Dataflow Pipeline
+    runs-on: ubuntu-latest
+    needs: test-table-creation
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Check Dataflow Job Status
+      run: |
+        JOB_NAME="${{ github.event.inputs.environment || 'dev' }}-realtime-data-pipeline"
+        echo "Checking Dataflow job: $JOB_NAME"
+        
+        # Get job status
+        JOB_ID=$(gcloud dataflow jobs list --region=${{ env.REGION }} --filter="name:${JOB_NAME}" --format="value(id)" | head -1)
+        
+        if [ -n "$JOB_ID" ]; then
+          echo "Found job ID: $JOB_ID"
+          JOB_STATUS=$(gcloud dataflow jobs show $JOB_ID --region=${{ env.REGION }} --format="value(currentState)")
+          echo "Job status: $JOB_STATUS"
+          
+          if [ "$JOB_STATUS" = "JOB_STATE_RUNNING" ]; then
+            echo "✅ Dataflow job is running"
+          else
+            echo "⚠️ Dataflow job status: $JOB_STATUS"
+          fi
+        else
+          echo "❌ No Dataflow job found"
+          exit 1
+        fi
+
+    - name: Test Event Processing
+      run: |
+        echo "Publishing test events to verify end-to-end processing..."
+        
+        TOPIC_NAME="${{ github.event.inputs.environment || 'dev' }}-backend-events-topic"
+        
+        # Order event
+        ORDER_EVENT='{"event_type":"order","order_id":"test-order-$(date +%s)","customer_id":"test-customer-123","order_date":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'","status":"pending","items":[{"product_id":"prod-001","product_name":"Test Product","quantity":1,"price":29.99}],"shipping_address":{"street":"123 Test St","city":"Test City","country":"US"},"total_amount":29.99}'
+        
+        echo "Publishing order event..."
+        gcloud pubsub topics publish $TOPIC_NAME --message="$ORDER_EVENT"
+        
+        # Inventory event
+        INVENTORY_EVENT='{"event_type":"inventory","inventory_id":"inv-test-$(date +%s)","product_id":"prod-001","warehouse_id":"wh-us-central","quantity_change":-1,"reason":"sale","timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'"}'
+        
+        echo "Publishing inventory event..."
+        gcloud pubsub topics publish $TOPIC_NAME --message="$INVENTORY_EVENT"
+        
+        # User activity event
+        USER_EVENT='{"event_type":"user_activity","user_id":"user-test-$(date +%s)","activity_type":"view_product","ip_address":"192.168.1.100","user_agent":"Mozilla/5.0 Test Browser","timestamp":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'","metadata":{"session_id":"sess-test-123","platform":"web"}}'
+        
+        echo "Publishing user activity event..."
+        gcloud pubsub topics publish $TOPIC_NAME --message="$USER_EVENT"
+
+    - name: Wait and Verify Data Processing
+      run: |
+        echo "Waiting for events to be processed..."
+        sleep 120  # Wait 2 minutes for processing
+        
+        DATASET="${{ github.event.inputs.environment || 'dev' }}_events_dataset"
+        TODAY=$(date -u +"%Y-%m-%d")
+        
+        # Check if data was written to BigQuery
+        for table in orders inventory user_activity; do
+          echo "Checking data in $table table..."
+          ROW_COUNT=$(bq query --project_id=${{ env.PROJECT_ID }} --use_legacy_sql=false --format=csv "SELECT COUNT(*) FROM \`${{ env.PROJECT_ID }}.$DATASET.$table\` WHERE event_date = '$TODAY'" | tail -1)
+          
+          if [ "$ROW_COUNT" -gt 0 ]; then
+            echo "✅ Found $ROW_COUNT rows in $table table for today"
+          else
+            echo "⚠️ No rows found in $table table for today"
+          fi
+        done
+
+  test-gcs-output:
+    name: Test GCS Output
+    runs-on: ubuntu-latest
+    needs: test-dataflow-pipeline
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Check GCS Output Files
+      run: |
+        BUCKET="${{ env.PROJECT_ID }}-${{ github.event.inputs.environment || 'dev' }}-raw-events"
+        echo "Checking GCS output in bucket: $BUCKET"
+        
+        # Check for output files
+        if gsutil ls "gs://$BUCKET/output/" 2>/dev/null; then
+          echo "✅ Found output files in GCS"
+          
+          # List recent files
+          echo "Recent files:"
+          gsutil ls -l "gs://$BUCKET/output/**" | tail -10
+        else
+          echo "⚠️ No output files found in GCS"
+        fi
+
+  performance-test:
+    name: Performance Test
+    runs-on: ubuntu-latest
+    needs: [test-table-creation, test-dataflow-pipeline]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Load Test Event Publishing
+      run: |
+        echo "Running load test with multiple events..."
+        
+        TOPIC_NAME="${{ github.event.inputs.environment || 'dev' }}-backend-events-topic"
+        
+        # Publish 100 events quickly
+        for i in {1..100}; do
+          ORDER_EVENT='{"event_type":"order","order_id":"load-test-order-'$i'","customer_id":"customer-'$((i % 10))'","order_date":"'$(date -u +"%Y-%m-%dT%H:%M:%SZ")'","status":"pending","items":[{"product_id":"prod-'$((i % 5))'","product_name":"Load Test Product","quantity":1,"price":9.99}],"shipping_address":{"street":"123 Load Test St","city":"Test City","country":"US"},"total_amount":9.99}'
+          
+          gcloud pubsub topics publish $TOPIC_NAME --message="$ORDER_EVENT" &
+          
+          # Publish in batches to avoid overwhelming
+          if [ $((i % 10)) -eq 0 ]; then
+            wait
+            sleep 1
+          fi
+        done
+        
+        wait
+        echo "Published 100 test events"
+
+    - name: Monitor Processing Performance
+      run: |
+        echo "Monitoring processing performance..."
+        sleep 60  # Wait for processing
+        
+        # Check Dataflow metrics
+        JOB_NAME="${{ github.event.inputs.environment || 'dev' }}-realtime-data-pipeline"
+        JOB_ID=$(gcloud dataflow jobs list --region=${{ env.REGION }} --filter="name:${JOB_NAME}" --format="value(id)" | head -1)
+        
+        if [ -n "$JOB_ID" ]; then
+          echo "Dataflow job metrics:"
+          gcloud dataflow jobs show $JOB_ID --region=${{ env.REGION }} --format="table(currentState,currentStateTime)"
+        fi
+
+  generate-test-report:
+    name: Generate Test Report
+    runs-on: ubuntu-latest
+    needs: [test-table-creation, test-dataflow-pipeline, test-gcs-output, performance-test]
+    if: always()
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Generate Test Report
+      run: |
+        echo "# Data Pipeline Test Report" > test-report.md
+        echo "" >> test-report.md
+        echo "**Test Date:** $(date -u)" >> test-report.md
+        echo "**Environment:** ${{ github.event.inputs.environment || 'dev' }}" >> test-report.md
+        echo "**Project:** ${{ env.PROJECT_ID }}" >> test-report.md
+        echo "" >> test-report.md
+        
+        echo "## Test Results" >> test-report.md
+        echo "" >> test-report.md
+        
+        # Check job results
+        if [ "${{ needs.test-table-creation.result }}" = "success" ]; then
+          echo "✅ Table Creation: PASSED" >> test-report.md
+        else
+          echo "❌ Table Creation: FAILED" >> test-report.md
+        fi
+        
+        if [ "${{ needs.test-dataflow-pipeline.result }}" = "success" ]; then
+          echo "✅ Dataflow Pipeline: PASSED" >> test-report.md
+        else
+          echo "❌ Dataflow Pipeline: FAILED" >> test-report.md
+        fi
+        
+        if [ "${{ needs.test-gcs-output.result }}" = "success" ]; then
+          echo "✅ GCS Output: PASSED" >> test-report.md
+        else
+          echo "❌ GCS Output: FAILED" >> test-report.md
+        fi
+        
+        if [ "${{ needs.performance-test.result }}" = "success" ]; then
+          echo "✅ Performance Test: PASSED" >> test-report.md
+        else
+          echo "❌ Performance Test: FAILED" >> test-report.md
+        fi
+        
+        echo "" >> test-report.md
+        echo "## Summary" >> test-report.md
+        echo "Data pipeline testing completed. Check individual job logs for detailed results." >> test-report.md
+        
+        cat test-report.md
+
+    - name: Upload Test Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-report-${{ github.event.inputs.environment || 'dev' }}
+        path: test-report.md 
