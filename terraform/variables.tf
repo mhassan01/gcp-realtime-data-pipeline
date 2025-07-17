@@ -16,18 +16,13 @@ variable "zone" {
   default     = "us-central1-a"
 }
 
-# variable "alert_email" {
-#   description = "Email address for alerts (monitoring disabled for demo)"
-#   type        = string
-#   default     = "mohammedhasssan3390515@gmail.com"
-# }
-
 variable "environment" {
   description = "Environment (dev, staging, prod)"
   type        = string
   default     = "dev"
 }
 
+# Dataflow configuration (used by deployment scripts)
 variable "dataflow_machine_type" {
   description = "Machine type for Dataflow workers"
   type        = string
