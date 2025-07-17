@@ -52,7 +52,6 @@ resource "google_project_service" "apis" {
     "bigquery.googleapis.com",
     "storage.googleapis.com",
     "cloudbuild.googleapis.com",
-    "monitoring.googleapis.com",
     "cloudfunctions.googleapis.com",
     "run.googleapis.com"
   ])
@@ -76,8 +75,7 @@ resource "google_project_iam_member" "dataflow_permissions" {
     "roles/dataflow.worker",
     "roles/bigquery.dataEditor",
     "roles/storage.objectAdmin",
-    "roles/pubsub.subscriber",
-    "roles/monitoring.metricWriter"
+    "roles/pubsub.subscriber"
   ])
 
   project = var.project_id
@@ -375,7 +373,6 @@ resource "google_service_account" "event_generator_sa" {
 resource "google_project_iam_member" "event_generator_permissions" {
   for_each = toset([
     "roles/pubsub.publisher",
-    "roles/monitoring.metricWriter",
     "roles/logging.logWriter"
   ])
 
