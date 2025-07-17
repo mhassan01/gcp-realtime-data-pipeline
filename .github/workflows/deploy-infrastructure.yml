@@ -2,11 +2,10 @@ name: Deploy Real-time Data Pipeline Infrastructure
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, dev ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
@@ -56,14 +55,11 @@ jobs:
         name: terraform-plan
         path: terraform/tfplan
 
-  deploy-infrastructure:
-    name: Deploy Infrastructure
+  terraform-apply:
+    name: Terraform Apply
     runs-on: ubuntu-latest
     needs: terraform-plan
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
-    
-    outputs:
-      terraform_success: ${{ steps.terraform.outputs.success }}
     
     steps:
     - name: Checkout code
@@ -93,14 +89,17 @@ jobs:
       run: terraform init
 
     - name: Terraform Apply
-      id: terraform
       working-directory: ./terraform
+      run: terraform apply -auto-approve tfplan
+
+    - name: Assign IAM Roles
       run: |
-        terraform apply -auto-approve tfplan
-        echo "success=true" >> $GITHUB_OUTPUT
-      env:
-        TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ env.ENVIRONMENT }}
+        echo "🔐 Assigning IAM roles to service accounts..."
+        chmod +x ./scripts/assign-iam-roles.sh
+        ./scripts/assign-iam-roles.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
+        
+        echo "⏳ Waiting for IAM propagation..."
+        sleep 30
 
     - name: Handle Resource Conflicts (if needed)
       if: failure()
@@ -119,32 +118,101 @@ jobs:
         
         # Try applying again
         echo "Retrying terraform apply after imports..."
-        terraform apply -auto-approve
-        echo "success=true" >> $GITHUB_OUTPUT
+        terraform apply -auto-approve || {
+          echo "❌ Terraform apply failed again. Triggering cleanup..."
+          exit 1
+        }
+        
+        # If successful, assign IAM roles
+        echo "🔐 Assigning IAM roles after successful terraform retry..."
+        chmod +x ../scripts/assign-iam-roles.sh
+        ../scripts/assign-iam-roles.sh "$PROJECT_ID" "$ENV"
+        sleep 30
+      continue-on-error: false
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
         TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
-    - name: Assign IAM Roles
-      if: steps.terraform.outputs.success == 'true' || success()
-      run: |
-        echo "🔐 Assigning IAM roles to service accounts..."
-        chmod +x ./scripts/assign-iam-roles.sh
-        ./scripts/assign-iam-roles.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
-        
-        echo "⏳ Waiting for IAM propagation..."
-        sleep 30
-
-  deploy-applications:
-    name: Deploy Applications
+  deploy-cloud-function:
+    name: Deploy Cloud Function
     runs-on: ubuntu-latest
-    needs: deploy-infrastructure
-    if: needs.deploy-infrastructure.outputs.terraform_success == 'true'
+    needs: terraform-apply
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
     
-    strategy:
-      matrix:
-        service: [cloud-function, event-generator, dataflow-template]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Deploy Cloud Function
+      run: |
+        chmod +x ./scripts/deploy-cloud-function.sh
+        ./scripts/deploy-cloud-function.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
+
+    - name: Update Cloud Function via Terraform
+      working-directory: ./terraform
+      run: |
+        terraform init
+        terraform apply -auto-approve
+      env:
+        TF_VAR_project_id: ${{ env.PROJECT_ID }}
+        TF_VAR_environment: ${{ env.ENVIRONMENT }}
+
+  deploy-event-generator:
+    name: Deploy Event Generator Service
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ env.GCP_SA_KEY }}
+
+    - name: Setup Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: Deploy Event Generator to Cloud Run
+      run: |
+        chmod +x ./scripts/deploy-event-generator.sh
+        ./scripts/deploy-event-generator.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
+
+    - name: Test Event Generator Service
+      run: |
+        # Get service URL from terraform output or gcloud
+        SERVICE_NAME="${{ env.ENVIRONMENT }}-event-generator"
+        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=${{ env.REGION }} --format="value(status.url)")
         
+        echo "Testing Event Generator service at: $SERVICE_URL"
+        
+        # Test health endpoint
+        curl -f "$SERVICE_URL/health" || exit 1
+        
+        # Test sample event generation
+        curl -f "$SERVICE_URL/sample/order" || exit 1
+        
+        # Test scenarios endpoint
+        curl -f "$SERVICE_URL/scenarios" || exit 1
+        
+        echo "✅ Event Generator service is healthy and responding"
+
+  build-dataflow-template:
+    name: Build and Deploy Dataflow Template
+    runs-on: ubuntu-latest
+    needs: [terraform-apply, deploy-event-generator]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -158,90 +226,27 @@ jobs:
       uses: google-github-actions/setup-gcloud@v2
 
     - name: Configure Docker for GCR
-      if: matrix.service == 'event-generator' || matrix.service == 'dataflow-template'
       run: gcloud auth configure-docker
 
-    - name: Deploy Cloud Function
-      if: matrix.service == 'cloud-function'
+    - name: Build and Deploy Dataflow Template
       run: |
-        echo "🚀 Deploying Cloud Function for table management..."
-        chmod +x ./scripts/deploy-cloud-function.sh
-        ./scripts/deploy-cloud-function.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
-
-    - name: Deploy Event Generator
-      if: matrix.service == 'event-generator'
-      run: |
-        echo "🚀 Deploying Event Generator to Cloud Run..."
-        chmod +x ./scripts/deploy-event-generator.sh
-        ./scripts/deploy-event-generator.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
-
-    - name: Deploy Dataflow Template
-      if: matrix.service == 'dataflow-template'
-      run: |
-        echo "🚀 Building and deploying Dataflow template..."
         chmod +x ./scripts/deploy-dataflow-template.sh
         ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
-  deploy-dataflow-job:
-    name: Deploy Dataflow Job
-    runs-on: ubuntu-latest
-    needs: deploy-applications
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ env.GCP_SA_KEY }}
-
-    - name: Setup Google Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
-
-    - name: Deploy Dataflow Streaming Job
+    - name: Deploy Dataflow Job via Terraform
+      working-directory: ./terraform
       run: |
-        echo "🚀 Starting Dataflow streaming pipeline..."
-        
-        PROJECT_ID="${{ env.PROJECT_ID }}"
-        ENV="${{ env.ENVIRONMENT }}"
-        REGION="${{ env.REGION }}"
-        
-        # Check if template exists
-        TEMPLATE_PATH="gs://$PROJECT_ID-$ENV-dataflow-templates/templates/streaming-pipeline.json"
-        if ! gsutil ls "$TEMPLATE_PATH" > /dev/null 2>&1; then
-          echo "❌ Template not found at $TEMPLATE_PATH"
-          exit 1
-        fi
-        
-        # Check if job already exists
-        EXISTING_JOBS=$(gcloud dataflow jobs list --region=$REGION --filter="name:$ENV-realtime-data-pipeline AND state:Running" --format="value(id)")
-        if [ ! -z "$EXISTING_JOBS" ]; then
-          echo "⚠️ Dataflow job already running: $EXISTING_JOBS"
-          echo "Skipping job creation"
-          exit 0
-        fi
-        
-        # Create Dataflow job
-        echo "Creating Dataflow job from template..."
-        gcloud dataflow jobs run "$ENV-realtime-data-pipeline" \
-          --gcs-location="$TEMPLATE_PATH" \
-          --region="$REGION" \
-          --service-account-email="$ENV-dataflow-pipeline-sa@$PROJECT_ID.iam.gserviceaccount.com" \
-          --parameters="inputSubscription=projects/$PROJECT_ID/subscriptions/$ENV-backend-events-subscription,outputDataset=${ENV}_events_dataset,outputGcsPrefix=gs://$PROJECT_ID-$ENV-raw-events/output,project=$PROJECT_ID,region=$REGION,environment=$ENV" \
-          --max-workers=10 \
-          --num-workers=2 \
-          --worker-machine-type=n1-standard-2 \
-          --network=default \
-          --subnetwork=regions/$REGION/subnetworks/default \
-          --enable-streaming-engine
-        
-        echo "✅ Dataflow job started successfully"
+        terraform init
+        terraform apply -auto-approve
+      env:
+        TF_VAR_project_id: ${{ env.PROJECT_ID }}
+        TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
   test-pipeline:
-    name: Test Complete Pipeline
+    name: Test Data Pipeline
     runs-on: ubuntu-latest
-    needs: [deploy-applications, deploy-dataflow-job]
+    needs: [deploy-cloud-function, deploy-event-generator, build-dataflow-template]
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
     
     steps:
     - name: Checkout code
@@ -255,162 +260,28 @@ jobs:
     - name: Setup Google Cloud SDK
       uses: google-github-actions/setup-gcloud@v2
 
-    - name: Wait for Services to be Ready
-      run: |
-        echo "⏳ Waiting for all services to be fully ready..."
-        sleep 90
+    - name: Wait for Infrastructure
+      run: sleep 60  # Wait for services to be fully ready
 
-    - name: Test Event Generator Service
+    - name: Run Integration Tests
       run: |
-        echo "🧪 Testing Event Generator service..."
-        
-        SERVICE_NAME="${{ env.ENVIRONMENT }}-event-generator"
-        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=${{ env.REGION }} --format="value(status.url)")
-        
-        if [ -z "$SERVICE_URL" ]; then
-          echo "❌ Could not get Event Generator service URL"
-          exit 1
-        fi
-        
-        echo "Testing Event Generator at: $SERVICE_URL"
-        
-        # Test health endpoint
-        curl -f "$SERVICE_URL/health" || exit 1
-        echo "✅ Health check passed"
-        
-        # Test sample event generation
-        curl -f "$SERVICE_URL/sample/order" || exit 1
-        echo "✅ Sample event generation working"
-        
-        # Test scenarios endpoint
-        curl -f "$SERVICE_URL/scenarios" || exit 1
-        echo "✅ Scenarios endpoint working"
-
-    - name: Test Cloud Function
-      run: |
-        echo "🧪 Testing Cloud Function..."
-        
-        FUNCTION_NAME="${{ env.ENVIRONMENT }}-bigquery-table-manager"
-        
-        # Check if function exists
-        if gcloud functions describe $FUNCTION_NAME --region=${{ env.REGION }} > /dev/null 2>&1; then
-          echo "✅ Cloud Function deployed successfully"
-        else
-          echo "❌ Cloud Function not found"
-          exit 1
-        fi
+        chmod +x ./scripts/test-table-creation.sh
+        ./scripts/test-table-creation.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
 
     - name: Verify Dataflow Job
       run: |
-        echo "🧪 Verifying Dataflow job..."
-        
         JOB_NAME="${{ env.ENVIRONMENT }}-realtime-data-pipeline"
-        JOB_ID=$(gcloud dataflow jobs list --region=${{ env.REGION }} --filter="name:${JOB_NAME}" --format="value(id)" | head -1)
-        
-        if [ -z "$JOB_ID" ]; then
-          echo "❌ Dataflow job not found"
-          exit 1
-        fi
-        
-        JOB_STATE=$(gcloud dataflow jobs describe $JOB_ID --region=${{ env.REGION }} --format="value(currentState)")
-        echo "Dataflow job state: $JOB_STATE"
-        
-        if [ "$JOB_STATE" = "JOB_STATE_RUNNING" ]; then
-          echo "✅ Dataflow job is running"
-        else
-          echo "⚠️ Dataflow job state: $JOB_STATE"
-        fi
+        gcloud dataflow jobs list --region=${{ env.REGION }} --filter="name:${JOB_NAME}" --format="value(id)" | head -1
 
-    - name: Test BigQuery Setup
+    - name: Check BigQuery Tables
       run: |
-        echo "🧪 Testing BigQuery setup..."
-        
         DATASET="${{ env.ENVIRONMENT }}_events_dataset"
-        
-        # Check if dataset exists
-        if bq show --project_id=${{ env.PROJECT_ID }} $DATASET > /dev/null 2>&1; then
-          echo "✅ BigQuery dataset exists"
-          
-          # List tables in dataset
-          echo "Tables in dataset:"
-          bq ls --project_id=${{ env.PROJECT_ID }} $DATASET
-        else
-          echo "❌ BigQuery dataset not found"
-          exit 1
-        fi
-
-    - name: Run Integration Test
-      run: |
-        echo "🧪 Running end-to-end integration test..."
-        
-        if [ -f "./scripts/test-table-creation.sh" ]; then
-          chmod +x ./scripts/test-table-creation.sh
-          ./scripts/test-table-creation.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
-        else
-          echo "ℹ️ Integration test script not found, skipping"
-        fi
-
-    - name: Generate Test Events
-      run: |
-        echo "🧪 Generating test events..."
-        
-        SERVICE_NAME="${{ env.ENVIRONMENT }}-event-generator"
-        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=${{ env.REGION }} --format="value(status.url)")
-        
-        if [ ! -z "$SERVICE_URL" ]; then
-          echo "Generating sample events via Event Generator..."
-          curl -X POST "$SERVICE_URL/generate/batch" \
-            -H "Content-Type: application/json" \
-            -d '{"count": 10, "event_types": ["order", "inventory", "user_activity"]}' || true
-          echo "✅ Test events generated"
-        fi
-
-  deployment-summary:
-    name: Deployment Summary
-    runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, deploy-applications, deploy-dataflow-job, test-pipeline]
-    if: always()
-    
-    steps:
-    - name: Deployment Status Summary
-      run: |
-        echo "🎯 Real-time Data Pipeline Deployment Summary"
-        echo "=============================================="
-        echo ""
-        echo "📋 Infrastructure Status:"
-        echo "  - Terraform Apply: ${{ needs.deploy-infrastructure.result }}"
-        echo "  - IAM Roles: Assigned via script"
-        echo ""
-        echo "📋 Application Status:"
-        echo "  - Cloud Function: ${{ needs.deploy-applications.result }}"
-        echo "  - Event Generator: ${{ needs.deploy-applications.result }}" 
-        echo "  - Dataflow Template: ${{ needs.deploy-applications.result }}"
-        echo ""
-        echo "📋 Pipeline Status:"
-        echo "  - Dataflow Job: ${{ needs.deploy-dataflow-job.result }}"
-        echo "  - Integration Tests: ${{ needs.test-pipeline.result }}"
-        echo ""
-        echo "🌐 Access Points:"
-        echo "  - Event Generator: https://console.cloud.google.com/run"
-        echo "  - BigQuery Console: https://console.cloud.google.com/bigquery"
-        echo "  - Dataflow Console: https://console.cloud.google.com/dataflow"
-        echo ""
-        echo "📊 Next Steps:"
-        echo "  1. Monitor Dataflow job in GCP Console"
-        echo "  2. Generate events via Event Generator API"
-        echo "  3. Query processed data in BigQuery"
-        echo "  4. Check Cloud Function logs for table creation"
-        echo ""
-        if [ "${{ needs.deploy-infrastructure.result }}" = "success" ] && [ "${{ needs.deploy-applications.result }}" = "success" ]; then
-          echo "🎉 Deployment completed successfully!"
-        else
-          echo "⚠️ Some components may have issues. Check job logs."
-        fi
+        bq ls --project_id=${{ env.PROJECT_ID }} $DATASET
 
   cleanup-on-failure:
     name: Cleanup on Failure
     runs-on: ubuntu-latest
-    needs: [deploy-infrastructure, deploy-applications, deploy-dataflow-job, test-pipeline]
+    needs: [terraform-apply, deploy-cloud-function, deploy-event-generator, build-dataflow-template, test-pipeline]
     if: failure()
     
     steps:
@@ -425,27 +296,136 @@ jobs:
     - name: Setup Google Cloud SDK
       uses: google-github-actions/setup-gcloud@v2
 
-    - name: Run Cleanup Script
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.5.7
+
+    - name: Get Environment
+      id: env
       run: |
-        if [ -f "./scripts/cleanup-all-resources.sh" ]; then
-          chmod +x ./scripts/cleanup-all-resources.sh
-          ./scripts/cleanup-all-resources.sh --auto-approve --project-id="${{ env.PROJECT_ID }}" --environment="${{ env.ENVIRONMENT }}"
-        else
-          echo "⚠️ Cleanup script not found, performing manual cleanup..."
+        ENV="${{ env.ENVIRONMENT }}"
+        echo "environment=$ENV" >> $GITHUB_OUTPUT
+        echo "Detected environment: $ENV"
+
+    - name: Initialize Terraform for Cleanup
+      working-directory: ./terraform
+      run: terraform init
+      continue-on-error: true
+
+    - name: Import Existing Resources (Handle Conflicts)
+      working-directory: ./terraform
+      run: |
+        ENV="${{ steps.env.outputs.environment }}"
+        PROJECT_ID="${{ env.PROJECT_ID }}"
+        
+        echo "Attempting to import existing resources to handle conflicts..."
+        
+        # Import Pub/Sub topics if they exist
+        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" \
+          google_pubsub_topic.backend_events \
+          "projects/$PROJECT_ID/topics/$ENV-backend-events-topic" || true
           
-          ENV="${{ env.ENVIRONMENT }}"
-          PROJECT_ID="${{ env.PROJECT_ID }}"
-          REGION="${{ env.REGION }}"
+        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" \
+          google_pubsub_topic.dead_letter \
+          "projects/$PROJECT_ID/topics/$ENV-backend-events-dead-letter" || true
           
-          # Stop Dataflow jobs
-          gcloud dataflow jobs list --region=$REGION --filter="name:$ENV-realtime-data-pipeline" --format="value(id)" | while read job_id; do
-            [ ! -z "$job_id" ] && gcloud dataflow jobs cancel $job_id --region=$REGION || true
-          done
+        # Import BigQuery dataset if it exists
+        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" \
+          google_bigquery_dataset.events_dataset \
+          "projects/$PROJECT_ID/datasets/${ENV}_events_dataset" || true
           
-          # Delete Cloud Run and Cloud Function
-          gcloud run services delete "$ENV-event-generator" --region=$REGION --quiet || true
-          gcloud functions delete "$ENV-bigquery-table-manager" --region=$REGION --quiet || true
-          
-          echo "🧹 Basic cleanup completed"
-        fi
-      continue-on-error: true 
+        echo "Import completed (errors expected for non-existing resources)"
+      continue-on-error: true
+
+    - name: Run Comprehensive Cleanup
+      run: |
+        chmod +x ./scripts/cleanup-all-resources.sh
+        
+        ENV="${{ steps.env.outputs.environment }}"
+        PROJECT_ID="${{ env.PROJECT_ID }}"
+        
+        echo "🧹 Starting comprehensive cleanup for environment: $ENV"
+        echo "Project ID: $PROJECT_ID"
+        
+        # Run our comprehensive cleanup script
+        ./scripts/cleanup-all-resources.sh --auto-approve --project-id="$PROJECT_ID" --environment="$ENV"
+      continue-on-error: true
+
+    - name: Manual Resource Cleanup (Fallback)
+      if: always()
+      run: |
+        ENV="${{ steps.env.outputs.environment }}"
+        PROJECT_ID="${{ env.PROJECT_ID }}"
+        REGION="${{ env.REGION }}"
+        
+        echo "🔄 Running manual cleanup as fallback for demo environment..."
+        
+        # Stop and delete Dataflow jobs
+        echo "Cleaning up Dataflow jobs..."
+        gcloud dataflow jobs list --region=$REGION --filter="name:$ENV-realtime-data-pipeline" --format="value(id)" | while read job_id; do
+          if [ ! -z "$job_id" ]; then
+            echo "Stopping Dataflow job: $job_id"
+            gcloud dataflow jobs cancel $job_id --region=$REGION || true
+          fi
+        done
+        
+        # Delete Cloud Run services
+        echo "Cleaning up Cloud Run services..."
+        gcloud run services delete "$ENV-event-generator" --region=$REGION --quiet || true
+        
+        # Delete Cloud Functions
+        echo "Cleaning up Cloud Functions..."
+        gcloud functions delete "$ENV-table-manager" --region=$REGION --quiet || true
+        
+        # Delete Pub/Sub topics and subscriptions
+        echo "Cleaning up Pub/Sub resources..."
+        gcloud pubsub subscriptions delete "$ENV-backend-events-subscription" || true
+        gcloud pubsub topics delete "$ENV-backend-events-topic" || true
+        gcloud pubsub topics delete "$ENV-backend-events-dead-letter" || true
+        
+        # Delete BigQuery dataset (demo environment)
+        echo "Cleaning up BigQuery dataset..."
+        bq rm -r -f -d "$PROJECT_ID:${ENV}_events_dataset" || true
+        
+        # Delete Cloud Storage buckets (demo environment)
+        echo "Cleaning up Cloud Storage buckets..."
+        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-raw-events" || true
+        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-temp" || true
+        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-templates" || true
+        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-function-source" || true
+        
+        # Delete Container Registry images
+        echo "Cleaning up Container Registry images..."
+        gcloud container images list --repository=gcr.io/$PROJECT_ID --format="value(name)" | grep -E "(event-generator|table-manager)" | while read image; do
+          gcloud container images delete $image --force-delete-tags --quiet || true
+        done
+        
+        # Delete service accounts (demo environment)
+        echo "Cleaning up service accounts..."
+        gcloud iam service-accounts delete "$ENV-dataflow-pipeline-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
+        gcloud iam service-accounts delete "$ENV-table-manager-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
+        gcloud iam service-accounts delete "$ENV-event-generator-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
+        
+        echo "🏁 Manual cleanup completed for demo environment"
+      continue-on-error: true
+
+    - name: Cleanup Summary
+      if: always()
+      run: |
+        ENV="${{ steps.env.outputs.environment }}"
+        echo "🔍 Demo Project Cleanup Summary"
+        echo "============================================="
+        echo "Environment: $ENV (demo only)"
+        echo "✅ Comprehensive cleanup script executed"
+        echo "✅ Manual fallback cleanup executed"
+        echo "⚠️  Some resources may require manual intervention"
+        echo ""
+        echo "To verify cleanup completion, run:"
+        echo "  gcloud dataflow jobs list --region=${{ env.REGION }}"
+        echo "  gcloud run services list --region=${{ env.REGION }}"
+        echo "  gcloud functions list --region=${{ env.REGION }}"
+        echo "  gcloud pubsub topics list"
+        echo "  gcloud iam service-accounts list"
+        echo ""
+        echo "📧 Please review your GCP console and billing to ensure all demo resources are cleaned up" 
