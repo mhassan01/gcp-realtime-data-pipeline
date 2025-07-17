@@ -6,7 +6,6 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
-
 env:
   PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
   GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
@@ -93,27 +92,26 @@ jobs:
       working-directory: ./terraform
       run: terraform apply -auto-approve tfplan
 
-    - name: Handle IAM Permission Issues
+    - name: Assign IAM Roles
+      run: |
+        echo "🔐 Assigning IAM roles to service accounts..."
+        chmod +x ./scripts/assign-iam-roles.sh
+        ./scripts/assign-iam-roles.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
+        
+        echo "⏳ Waiting for IAM propagation..."
+        sleep 30
+
+    - name: Handle Resource Conflicts (if needed)
       if: failure()
       working-directory: ./terraform
       run: |
-        echo "🔍 Diagnosing IAM permission issues..."
-        
-        # Check current user permissions
-        echo "Current authenticated user:"
-        gcloud auth list --filter=status:ACTIVE --format="value(account)"
-        
-        # Check service account permissions
-        echo "Checking service account permissions:"
-        gcloud projects get-iam-policy ${{ env.PROJECT_ID }} --flatten="bindings[].members" --format='table(bindings.role)' --filter="bindings.members:*${{ env.PROJECT_ID }}*"
-        
-        # Attempt to retry with import for conflicting resources
-        echo "Attempting to import conflicting resources and retry..."
+        echo "🔍 Handling potential resource conflicts..."
         
         ENV="${{ env.ENVIRONMENT }}"
         PROJECT_ID="${{ env.PROJECT_ID }}"
         
         # Import existing resources to resolve conflicts
+        echo "Attempting to import conflicting resources..."
         terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_pubsub_topic.backend_events "projects/$PROJECT_ID/topics/$ENV-backend-events-topic" || true
         terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_pubsub_topic.dead_letter "projects/$PROJECT_ID/topics/$ENV-backend-events-dead-letter" || true
         terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_bigquery_dataset.events_dataset "projects/$PROJECT_ID/datasets/${ENV}_events_dataset" || true
@@ -124,6 +122,12 @@ jobs:
           echo "❌ Terraform apply failed again. Triggering cleanup..."
           exit 1
         }
+        
+        # If successful, assign IAM roles
+        echo "🔐 Assigning IAM roles after successful terraform retry..."
+        chmod +x ../scripts/assign-iam-roles.sh
+        ../scripts/assign-iam-roles.sh "$PROJECT_ID" "$ENV"
+        sleep 30
       continue-on-error: false
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}

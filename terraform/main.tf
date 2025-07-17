@@ -70,20 +70,27 @@ resource "google_service_account" "dataflow_sa" {
 }
 
 # IAM roles for Dataflow service account
-resource "google_project_iam_member" "dataflow_permissions" {
-  for_each = toset([
-    "roles/dataflow.worker",
-    "roles/bigquery.dataEditor",
-    "roles/storage.objectAdmin",
-    "roles/pubsub.subscriber"
-  ])
+# NOTE: Commented out due to IAM permission requirements for demo
+# Run these commands manually after terraform apply:
+#   gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:dev-dataflow-pipeline-sa@PROJECT_ID.iam.gserviceaccount.com" --role="roles/dataflow.worker"
+#   gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:dev-dataflow-pipeline-sa@PROJECT_ID.iam.gserviceaccount.com" --role="roles/bigquery.dataEditor"
+#   gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:dev-dataflow-pipeline-sa@PROJECT_ID.iam.gserviceaccount.com" --role="roles/storage.objectAdmin"
+#   gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:dev-dataflow-pipeline-sa@PROJECT_ID.iam.gserviceaccount.com" --role="roles/pubsub.subscriber"
 
-  project = var.project_id
-  role    = each.value
-  member  = "serviceAccount:${google_service_account.dataflow_sa.email}"
-
-  depends_on = [google_service_account.dataflow_sa]
-}
+# resource "google_project_iam_member" "dataflow_permissions" {
+#   for_each = toset([
+#     "roles/dataflow.worker",
+#     "roles/bigquery.dataEditor",
+#     "roles/storage.objectAdmin",
+#     "roles/pubsub.subscriber"
+#   ])
+#
+#   project = var.project_id
+#   role    = each.value
+#   member  = "serviceAccount:${google_service_account.dataflow_sa.email}"
+#
+#   depends_on = [google_service_account.dataflow_sa]
+# }
 
 # Dead Letter Topic (created first as it's referenced by subscription)
 resource "google_pubsub_topic" "dead_letter" {
@@ -235,19 +242,25 @@ resource "google_service_account" "table_manager_sa" {
 }
 
 # IAM roles for Table Manager service account
-resource "google_project_iam_member" "table_manager_permissions" {
-  for_each = toset([
-    "roles/bigquery.admin",
-    "roles/logging.logWriter",
-    "roles/cloudsql.client"
-  ])
+# NOTE: Commented out due to IAM permission requirements for demo
+# Run these commands manually after terraform apply:
+#   gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:dev-table-manager-sa@PROJECT_ID.iam.gserviceaccount.com" --role="roles/bigquery.admin"
+#   gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:dev-table-manager-sa@PROJECT_ID.iam.gserviceaccount.com" --role="roles/logging.logWriter"
+#   gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:dev-table-manager-sa@PROJECT_ID.iam.gserviceaccount.com" --role="roles/cloudsql.client"
 
-  project = var.project_id
-  role    = each.value
-  member  = "serviceAccount:${google_service_account.table_manager_sa.email}"
-
-  depends_on = [google_service_account.table_manager_sa]
-}
+# resource "google_project_iam_member" "table_manager_permissions" {
+#   for_each = toset([
+#     "roles/bigquery.admin",
+#     "roles/logging.logWriter",
+#     "roles/cloudsql.client"
+#   ])
+#
+#   project = var.project_id
+#   role    = each.value
+#   member  = "serviceAccount:${google_service_account.table_manager_sa.email}"
+#
+#   depends_on = [google_service_account.table_manager_sa]
+# }
 
 # Cloud Storage bucket for Cloud Function source code
 resource "google_storage_bucket" "function_source" {
@@ -370,18 +383,23 @@ resource "google_service_account" "event_generator_sa" {
 }
 
 # IAM roles for Event Generator service account
-resource "google_project_iam_member" "event_generator_permissions" {
-  for_each = toset([
-    "roles/pubsub.publisher",
-    "roles/logging.logWriter"
-  ])
+# NOTE: Commented out due to IAM permission requirements for demo
+# Run these commands manually after terraform apply:
+#   gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:dev-event-generator-sa@PROJECT_ID.iam.gserviceaccount.com" --role="roles/pubsub.publisher"
+#   gcloud projects add-iam-policy-binding PROJECT_ID --member="serviceAccount:dev-event-generator-sa@PROJECT_ID.iam.gserviceaccount.com" --role="roles/logging.logWriter"
 
-  project = var.project_id
-  role    = each.value
-  member  = "serviceAccount:${google_service_account.event_generator_sa.email}"
-
-  depends_on = [google_service_account.event_generator_sa]
-}
+# resource "google_project_iam_member" "event_generator_permissions" {
+#   for_each = toset([
+#     "roles/pubsub.publisher",
+#     "roles/logging.logWriter"
+#   ])
+#
+#   project = var.project_id
+#   role    = each.value
+#   member  = "serviceAccount:${google_service_account.event_generator_sa.email}"
+#
+#   depends_on = [google_service_account.event_generator_sa]
+# }
 
 # Cloud Run service for event generator
 resource "google_cloud_run_v2_service" "event_generator" {
@@ -453,8 +471,7 @@ resource "google_cloud_run_v2_service" "event_generator" {
 
   depends_on = [
     google_project_service.apis,
-    google_service_account.event_generator_sa,
-    google_project_iam_member.event_generator_permissions
+    google_service_account.event_generator_sa
   ]
 
   labels = {
@@ -472,80 +489,5 @@ resource "google_cloud_run_service_iam_member" "event_generator_noauth" {
   member   = "allUsers"
 }
 
-# Monitoring notification channel
-resource "google_monitoring_notification_channel" "email" {
-  display_name = "${var.environment} Email Notification"
-  type         = "email"
-
-  labels = {
-    email_address = var.alert_email
-  }
-
-  depends_on = [google_project_service.apis]
-}
-
-# Monitoring alert for Pub/Sub subscription
-resource "google_monitoring_alert_policy" "pubsub_undelivered_messages" {
-  display_name = "${var.environment} - Pub/Sub Undelivered Messages"
-  combiner     = "OR"
-  enabled      = true
-
-  conditions {
-    display_name = "Pub/Sub subscription has undelivered messages"
-    condition_threshold {
-      filter          = "resource.type=\"pubsub_subscription\" resource.label.subscription_id=\"${google_pubsub_subscription.backend_events_sub.name}\""
-      comparison      = "COMPARISON_GT"
-      threshold_value = 100
-      duration        = "300s"
-
-      aggregations {
-        alignment_period   = "300s"
-        per_series_aligner = "ALIGN_MEAN"
-      }
-    }
-  }
-
-  notification_channels = [google_monitoring_notification_channel.email.name]
-
-  alert_strategy {
-    notification_rate_limit {
-      period = "300s"
-    }
-    auto_close = "1800s"
-  }
-
-  depends_on = [google_project_service.apis, google_monitoring_notification_channel.email]
-}
-
-# Monitoring alert for BigQuery job failures
-resource "google_monitoring_alert_policy" "bigquery_job_failed" {
-  display_name = "${var.environment} - BigQuery Job Failed"
-  combiner     = "OR"
-  enabled      = true
-
-  conditions {
-    display_name = "BigQuery job failed"
-    condition_threshold {
-      filter          = "resource.type=\"bigquery_project\""
-      comparison      = "COMPARISON_GT"
-      threshold_value = 0
-      duration        = "60s"
-
-      aggregations {
-        alignment_period   = "300s"
-        per_series_aligner = "ALIGN_RATE"
-      }
-    }
-  }
-
-  notification_channels = [google_monitoring_notification_channel.email.name]
-
-  alert_strategy {
-    notification_rate_limit {
-      period = "300s"
-    }
-    auto_close = "1800s"
-  }
-
-  depends_on = [google_project_service.apis, google_monitoring_notification_channel.email]
-}
+# Note: Monitoring and alerting removed for demo simplicity
+# Can be added back when proper IAM permissions are configured
