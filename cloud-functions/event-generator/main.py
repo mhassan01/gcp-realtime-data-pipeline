@@ -197,19 +197,39 @@ class EventGenerator:
 # Initialize generator
 generator = None
 
+def ensure_generator():
+    """Ensure the generator is initialized, create if needed"""
+    global generator
+    if generator is None:
+        project_id = os.environ.get("PROJECT_ID")
+        environment = os.environ.get("ENVIRONMENT", "dev")
+        
+        if not project_id:
+            raise HTTPException(status_code=500, detail="PROJECT_ID environment variable is required")
+        
+        generator = EventGenerator(project_id, environment)
+        logger.info(f"Event generator initialized on demand for project: {project_id}, environment: {environment}")
+    
+    return generator
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize the event generator on startup"""
     global generator
-    project_id = os.environ.get("PROJECT_ID")
-    environment = os.environ.get("ENVIRONMENT", "dev")
-    
-    if not project_id:
-        logger.error("PROJECT_ID environment variable is required")
-        return
-    
-    generator = EventGenerator(project_id, environment)
-    logger.info(f"Event generator initialized for project: {project_id}, environment: {environment}")
+    try:
+        project_id = os.environ.get("PROJECT_ID")
+        environment = os.environ.get("ENVIRONMENT", "dev")
+        
+        if not project_id:
+            logger.warning("PROJECT_ID environment variable not set, generator will be initialized on first use")
+            return
+        
+        generator = EventGenerator(project_id, environment)
+        logger.info(f"Event generator initialized for project: {project_id}, environment: {environment}")
+    except Exception as e:
+        logger.error(f"Failed to initialize generator during startup: {e}")
+        # Don't fail startup, allow initialization on first use
+        pass
 
 @app.get("/")
 async def root():
@@ -224,13 +244,14 @@ async def root():
 @app.get("/health")
 async def health_check():
     """Detailed health check"""
-    project_id = os.environ.get("PROJECT_ID")
+    project_id = os.environ.get("PROJECT_ID", "not-set")
     environment = os.environ.get("ENVIRONMENT", "dev")
     
     return {
         "status": "healthy",
         "project_id": project_id,
         "environment": environment,
+        "generator_initialized": generator is not None,
         "active_tasks": len(generation_tasks),
         "timestamp": datetime.utcnow().isoformat() + "Z"
     }
@@ -238,12 +259,10 @@ async def health_check():
 @app.post("/generate/single/{event_type}")
 async def generate_single_event(event_type: str):
     """Generate and publish a single event"""
-    if not generator:
-        raise HTTPException(status_code=500, detail="Generator not initialized")
-    
     try:
-        event = generator.generate_event(event_type)
-        success = await generator.publish_event(event)
+        gen = ensure_generator()
+        event = gen.generate_event(event_type)
+        success = await gen.publish_event(event)
         
         if success:
             return {
@@ -263,44 +282,46 @@ async def generate_single_event(event_type: str):
 @app.post("/generate/batch")
 async def generate_batch_events(config: GenerationConfig):
     """Generate a batch of events immediately"""
-    if not generator:
-        raise HTTPException(status_code=500, detail="Generator not initialized")
-    
-    results = []
-    events_per_type = config.events_per_minute // len(config.event_types)
-    
-    for event_type in config.event_types:
-        for _ in range(events_per_type):
-            try:
-                event = generator.generate_event(event_type)
-                success = await generator.publish_event(event)
-                results.append({
-                    "event_type": event_type,
-                    "success": success,
-                    "event_id": event.get("order_id") or event.get("inventory_id") or event.get("user_id", "unknown")
-                })
-                
-                # Small delay to avoid overwhelming
-                await asyncio.sleep(0.1)
-                
-            except Exception as e:
-                logger.error(f"Error generating {event_type} event: {e}")
-                results.append({
-                    "event_type": event_type,
-                    "success": False,
-                    "error": str(e)
-                })
-    
-    successful = len([r for r in results if r["success"]])
-    
-    return {
-        "status": "completed",
-        "total_events": len(results),
-        "successful_events": successful,
-        "failed_events": len(results) - successful,
-        "results": results,
-        "timestamp": datetime.utcnow().isoformat() + "Z"
-    }
+    try:
+        gen = ensure_generator()
+        results = []
+        events_per_type = config.events_per_minute // len(config.event_types)
+        
+        for event_type in config.event_types:
+            for _ in range(events_per_type):
+                try:
+                    event = gen.generate_event(event_type)
+                    success = await gen.publish_event(event)
+                    results.append({
+                        "event_type": event_type,
+                        "success": success,
+                        "event_id": event.get("order_id") or event.get("inventory_id") or event.get("user_id", "unknown")
+                    })
+                    
+                    # Small delay to avoid overwhelming
+                    await asyncio.sleep(0.1)
+                    
+                except Exception as e:
+                    logger.error(f"Error generating {event_type} event: {e}")
+                    results.append({
+                        "event_type": event_type,
+                        "success": False,
+                        "error": str(e)
+                    })
+        
+        successful = len([r for r in results if r["success"]])
+        
+        return {
+            "status": "completed",
+            "total_events": len(results),
+            "successful_events": successful,
+            "failed_events": len(results) - successful,
+            "results": results,
+            "timestamp": datetime.utcnow().isoformat() + "Z"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to generate batch events: {str(e)}")
 
 async def continuous_generation_task(task_id: str, config: GenerationConfig):
     """Background task for continuous event generation"""
@@ -317,14 +338,15 @@ async def continuous_generation_task(task_id: str, config: GenerationConfig):
     event_count = 0
     
     try:
+        gen = ensure_generator()
         while datetime.utcnow() < end_time and task_id in generation_tasks:
             for event_type in config.event_types:
                 if datetime.utcnow() >= end_time or task_id not in generation_tasks:
                     break
                 
                 try:
-                    event = generator.generate_event(event_type)
-                    await generator.publish_event(event)
+                    event = gen.generate_event(event_type)
+                    await gen.publish_event(event)
                     event_count += 1
                     
                     # Update task status
@@ -355,31 +377,32 @@ async def continuous_generation_task(task_id: str, config: GenerationConfig):
 @app.post("/generate/start")
 async def start_continuous_generation(config: GenerationConfig, background_tasks: BackgroundTasks):
     """Start continuous event generation in the background"""
-    if not generator:
-        raise HTTPException(status_code=500, detail="Generator not initialized")
-    
-    task_id = f"task-{uuid.uuid4().hex[:8]}"
-    
-    # Store task metadata
-    generation_tasks[task_id] = {
-        "id": task_id,
-        "status": "running",
-        "config": config.dict(),
-        "start_time": datetime.utcnow().isoformat() + "Z",
-        "events_generated": 0,
-        "last_event_time": None
-    }
-    
-    # Start background task
-    background_tasks.add_task(continuous_generation_task, task_id, config)
-    
-    return {
-        "status": "started",
-        "task_id": task_id,
-        "config": config.dict(),
-        "estimated_duration_minutes": config.duration_minutes,
-        "estimated_total_events": config.events_per_minute * config.duration_minutes
-    }
+    try:
+        gen = ensure_generator()
+        task_id = f"task-{uuid.uuid4().hex[:8]}"
+        
+        # Store task metadata
+        generation_tasks[task_id] = {
+            "id": task_id,
+            "status": "running",
+            "config": config.dict(),
+            "start_time": datetime.utcnow().isoformat() + "Z",
+            "events_generated": 0,
+            "last_event_time": None
+        }
+        
+        # Start background task
+        background_tasks.add_task(continuous_generation_task, task_id, config)
+        
+        return {
+            "status": "started",
+            "task_id": task_id,
+            "config": config.dict(),
+            "estimated_duration_minutes": config.duration_minutes,
+            "estimated_total_events": config.events_per_minute * config.duration_minutes
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start generation: {str(e)}")
 
 @app.get("/generate/status/{task_id}")
 async def get_generation_status(task_id: str):
@@ -435,11 +458,9 @@ async def stop_all_generation_tasks():
 @app.get("/sample/{event_type}")
 async def get_sample_event(event_type: str):
     """Get a sample event without publishing it"""
-    if not generator:
-        raise HTTPException(status_code=500, detail="Generator not initialized")
-    
     try:
-        event = generator.generate_event(event_type)
+        gen = ensure_generator()
+        event = gen.generate_event(event_type)
         return {
             "event_type": event_type,
             "sample_event": event,
@@ -473,10 +494,8 @@ async def get_demo_scenario(scenario_name: str):
 @app.post("/scenarios/{scenario_name}/start")
 async def start_demo_scenario(scenario_name: str, background_tasks: BackgroundTasks):
     """Start a predefined demo scenario"""
-    if not generator:
-        raise HTTPException(status_code=500, detail="Generator not initialized")
-    
     try:
+        gen = ensure_generator()
         config = DemoScenarios.get_scenario(scenario_name)
         task_id = f"scenario-{scenario_name}-{uuid.uuid4().hex[:8]}"
         
