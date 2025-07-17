@@ -38,42 +38,45 @@ output "table_manager_service_account_email" {
   value       = google_service_account.table_manager_sa.email
 }
 
-output "table_manager_function_name" {
-  description = "Name of the BigQuery Table Manager Cloud Function"
-  value       = google_cloudfunctions2_function.table_manager.name
-}
+# Cloud Function outputs commented out - deployed via script
+# output "table_manager_function_name" {
+#   description = "Name of the BigQuery Table Manager Cloud Function"
+#   value       = google_cloudfunctions2_function.table_manager.name
+# }
 
-output "table_manager_function_url" {
-  description = "URL of the BigQuery Table Manager Cloud Function"
-  value       = google_cloudfunctions2_function.table_manager.service_config[0].uri
-}
+# output "table_manager_function_url" {
+#   description = "URL of the BigQuery Table Manager Cloud Function"
+#   value       = google_cloudfunctions2_function.table_manager.service_config[0].uri
+# }
 
 output "storage_bucket_dataflow_templates" {
   description = "Name of the Dataflow templates storage bucket"
   value       = google_storage_bucket.dataflow_templates.name
 }
 
-output "dataflow_job_name" {
-  description = "Name of the Dataflow streaming pipeline job"
-  value       = google_dataflow_job.streaming_pipeline.name
-}
+# Dataflow job outputs commented out - deployed via script
+# output "dataflow_job_name" {
+#   description = "Name of the Dataflow streaming pipeline job"
+#   value       = google_dataflow_job.streaming_pipeline.name
+# }
 
-output "dataflow_job_id" {
-  description = "ID of the Dataflow streaming pipeline job"
-  value       = google_dataflow_job.streaming_pipeline.job_id
-}
+# output "dataflow_job_id" {
+#   description = "ID of the Dataflow streaming pipeline job"
+#   value       = google_dataflow_job.streaming_pipeline.job_id
+# }
 
 output "event_generator_service_account_email" {
   description = "Email of the Event Generator service account"
   value       = google_service_account.event_generator_sa.email
 }
 
-output "event_generator_service_name" {
-  description = "Name of the Event Generator Cloud Run service"
-  value       = google_cloud_run_v2_service.event_generator.name
-}
+# Event Generator outputs commented out - service deployed via script
+# output "event_generator_service_name" {
+#   description = "Name of the Event Generator Cloud Run service"
+#   value       = google_cloud_run_v2_service.event_generator.name
+# }
 
-output "event_generator_service_url" {
-  description = "URL of the Event Generator Cloud Run service"
-  value       = google_cloud_run_v2_service.event_generator.uri
-} 
+# output "event_generator_service_url" {
+#   description = "URL of the Event Generator Cloud Run service"
+#   value       = google_cloud_run_v2_service.event_generator.uri
+# } 
