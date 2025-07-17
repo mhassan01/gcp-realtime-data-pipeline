@@ -358,7 +358,6 @@ resource "google_dataflow_job" "streaming_pipeline" {
   depends_on = [
     google_project_service.apis,
     google_service_account.dataflow_sa,
-    google_project_iam_member.dataflow_permissions,
     google_pubsub_subscription.backend_events_sub,
     google_bigquery_dataset.events_dataset,
     google_storage_bucket.raw_events,
