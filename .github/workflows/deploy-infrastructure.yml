@@ -38,6 +38,12 @@ jobs:
       working-directory: ./terraform
       run: terraform init
 
+    - name: Import Existing Resources
+      run: |
+        echo "🔄 Importing existing resources to prevent 409 conflicts..."
+        chmod +x ./scripts/import-existing-resources.sh
+        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
+
     - name: Terraform Validate
       working-directory: ./terraform
       run: terraform validate
@@ -87,12 +93,6 @@ jobs:
     - name: Terraform Init
       working-directory: ./terraform
       run: terraform init
-
-    - name: Import Existing Resources
-      run: |
-        echo "🔄 Importing existing resources to prevent 409 conflicts..."
-        chmod +x ./scripts/import-existing-resources.sh
-        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
     - name: Terraform Apply
       working-directory: ./terraform
