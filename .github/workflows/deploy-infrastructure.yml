@@ -61,6 +61,14 @@ jobs:
         name: terraform-plan
         path: terraform/tfplan
 
+    - name: Upload Terraform State
+      uses: actions/upload-artifact@v4
+      with:
+        name: terraform-state
+        path: |
+          terraform/.terraform/
+          terraform/.terraform.lock.hcl
+
   terraform-apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
@@ -90,9 +98,11 @@ jobs:
         name: terraform-plan
         path: terraform/
 
-    - name: Terraform Init
-      working-directory: ./terraform
-      run: terraform init
+    - name: Download Terraform State
+      uses: actions/download-artifact@v4
+      with:
+        name: terraform-state
+        path: terraform/
 
     - name: Terraform Apply
       working-directory: ./terraform
@@ -135,10 +145,15 @@ jobs:
         chmod +x ./scripts/deploy-cloud-function.sh
         ./scripts/deploy-cloud-function.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
 
+    - name: Download Terraform State
+      uses: actions/download-artifact@v4
+      with:
+        name: terraform-state
+        path: terraform/
+
     - name: Update Cloud Function via Terraform
       working-directory: ./terraform
       run: |
-        terraform init
         terraform apply -auto-approve
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
@@ -217,10 +232,15 @@ jobs:
         chmod +x ./scripts/deploy-dataflow-template.sh
         ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
+    - name: Download Terraform State
+      uses: actions/download-artifact@v4
+      with:
+        name: terraform-state
+        path: terraform/
+
     - name: Deploy Dataflow Job via Terraform
       working-directory: ./terraform
       run: |
-        terraform init
         terraform apply -auto-approve
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
