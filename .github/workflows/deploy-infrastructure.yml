@@ -124,6 +124,13 @@ jobs:
         echo "⚠️ Terraform state artifact not found, running fresh init..."
         terraform init
 
+    - name: Import Existing Resources (fallback path)
+      if: steps.download-state.outcome == 'failure'
+      run: |
+        echo "🔄 Importing existing resources for fresh plan..."
+        chmod +x ./scripts/import-existing-resources.sh
+        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
+
     - name: Terraform Apply
       working-directory: ./terraform
       run: |
@@ -190,6 +197,13 @@ jobs:
       run: |
         echo "⚠️ Terraform state artifact not found, running fresh init..."
         terraform init
+
+    - name: Import Existing Resources (fallback path)
+      if: steps.download-state-cf.outcome == 'failure'
+      run: |
+        echo "🔄 Importing existing resources for fresh plan..."
+        chmod +x ./scripts/import-existing-resources.sh
+        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
     - name: Update Cloud Function via Terraform
       working-directory: ./terraform
@@ -293,6 +307,13 @@ jobs:
       run: |
         echo "⚠️ Terraform state artifact not found, running fresh init..."
         terraform init
+
+    - name: Import Existing Resources (fallback path)
+      if: steps.download-state-df.outcome == 'failure'
+      run: |
+        echo "🔄 Importing existing resources for fresh plan..."
+        chmod +x ./scripts/import-existing-resources.sh
+        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
     - name: Deploy Dataflow Job via Terraform
       working-directory: ./terraform
