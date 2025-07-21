@@ -84,6 +84,57 @@ jobs:
         name: terraform-plan
         path: terraform/
 
+    - name: Generate Import Configuration
+      id: generate-imports
+      working-directory: ./terraform
+      run: |
+        cat > import.tf <<EOF
+        import {
+          to = google_storage_bucket.terraform_state
+          id = "terraform-state-${{ env.PROJECT_ID }}"
+        }
+        import {
+          to = google_service_account.dataflow_sa
+          id = "projects/${{ env.PROJECT_ID }}/serviceAccounts/${{ env.ENVIRONMENT }}-dataflow-pipeline-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+        }
+        import {
+          to = google_service_account.table_manager_sa
+          id = "projects/${{ env.PROJECT_ID }}/serviceAccounts/${{ env.ENVIRONMENT }}-table-manager-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+        }
+        import {
+          to = google_service_account.event_generator_sa
+          id = "projects/${{ env.PROJECT_ID }}/serviceAccounts/${{ env.ENVIRONMENT }}-event-generator-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
+        }
+        import {
+          to = google_pubsub_topic.dead_letter
+          id = "projects/${{ env.PROJECT_ID }}/topics/${{ env.ENVIRONMENT }}-backend-events-dead-letter"
+        }
+        import {
+          to = google_pubsub_topic.backend_events
+          id = "projects/${{ env.PROJECT_ID }}/topics/${{ env.ENVIRONMENT }}-backend-events-topic"
+        }
+        import {
+          to = google_storage_bucket.raw_events
+          id = "${{ env.PROJECT_ID }}-${{ env.ENVIRONMENT }}-raw-events"
+        }
+        import {
+          to = google_storage_bucket.dataflow_temp
+          id = "${{ env.PROJECT_ID }}-${{ env.ENVIRONMENT }}-dataflow-temp"
+        }
+        import {
+          to = google_storage_bucket.dataflow_templates
+          id = "${{ env.PROJECT_ID }}-${{ env.ENVIRONMENT }}-dataflow-templates"
+        }
+        import {
+          to = google_storage_bucket.function_source
+          id = "${{ env.PROJECT_ID }}-${{ env.ENVIRONMENT }}-function-source"
+        }
+        import {
+          to = google_bigquery_dataset.events_dataset
+          id = "projects/${{ env.PROJECT_ID }}/datasets/${{ env.ENVIRONMENT }}_events_dataset"
+        }
+        EOF
+
     - name: Terraform Init
       working-directory: ./terraform
       run: terraform init

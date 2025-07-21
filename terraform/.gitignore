@@ -9,9 +9,6 @@ override.tf
 override.tf.json
 *._override.tf
 *._override.tf.json
-terraform/import.tf
-# Crash log files
 crash.log
-
 # Mac
 .DS_Store 
