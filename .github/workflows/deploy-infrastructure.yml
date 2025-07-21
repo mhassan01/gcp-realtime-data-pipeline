@@ -101,46 +101,6 @@ jobs:
         echo "⏳ Waiting for IAM propagation..."
         sleep 30
 
-    - name: Handle Resource Conflicts (if needed)
-      if: failure()
-      working-directory: ./terraform
-      run: |
-        echo "🔍 Handling potential resource conflicts..."
-        
-        ENV="${{ env.ENVIRONMENT }}"
-        PROJECT_ID="${{ env.PROJECT_ID }}"
-        
-        # Import existing resources to resolve conflicts
-        echo "Attempting to import conflicting resources..."
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_storage_bucket.terraform_state "terraform-state-$PROJECT_ID" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_service_account.dataflow_sa "projects/$PROJECT_ID/serviceAccounts/$ENV-dataflow-pipeline-sa@$PROJECT_ID.iam.gserviceaccount.com" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_service_account.table_manager_sa "projects/$PROJECT_ID/serviceAccounts/$ENV-table-manager-sa@$PROJECT_ID.iam.gserviceaccount.com" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_service_account.event_generator_sa "projects/$PROJECT_ID/serviceAccounts/$ENV-event-generator-sa@$PROJECT_ID.iam.gserviceaccount.com" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_pubsub_topic.dead_letter "projects/$PROJECT_ID/topics/$ENV-backend-events-dead-letter" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_pubsub_topic.backend_events "projects/$PROJECT_ID/topics/$ENV-backend-events-topic" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_storage_bucket.raw_events "$PROJECT_ID-$ENV-raw-events" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_storage_bucket.dataflow_temp "$PROJECT_ID-$ENV-dataflow-temp" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_storage_bucket.dataflow_templates "$PROJECT_ID-$ENV-dataflow-templates" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_storage_bucket.function_source "$PROJECT_ID-$ENV-function-source" || true
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" google_bigquery_dataset.events_dataset "projects/$PROJECT_ID/datasets/${ENV}_events_dataset" || true
-        
-        # Try applying again
-        echo "Retrying terraform apply after imports..."
-        terraform apply -auto-approve || {
-          echo "❌ Terraform apply failed again. Triggering cleanup..."
-          exit 1
-        }
-        
-        # If successful, assign IAM roles
-        echo "🔐 Assigning IAM roles after successful terraform retry..."
-        chmod +x ../scripts/assign-iam-roles.sh
-        ../scripts/assign-iam-roles.sh "$PROJECT_ID" "$ENV"
-        sleep 30
-      continue-on-error: false
-      env:
-        TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ env.ENVIRONMENT }}
-
   deploy-cloud-function:
     name: Deploy Cloud Function
     runs-on: ubuntu-latest
