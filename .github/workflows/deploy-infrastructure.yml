@@ -126,7 +126,18 @@ jobs:
 
     - name: Terraform Apply
       working-directory: ./terraform
-      run: terraform apply -auto-approve tfplan
+      run: |
+        if [ "${{ steps.download-state.outcome }}" = "failure" ]; then
+          echo "🔄 State artifact missing - creating fresh plan and applying..."
+          terraform plan -out=fresh-tfplan
+          terraform apply -auto-approve fresh-tfplan
+        else
+          echo "✅ Using existing plan with shared state..."
+          terraform apply -auto-approve tfplan
+        fi
+      env:
+        TF_VAR_project_id: ${{ env.PROJECT_ID }}
+        TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
     - name: Assign IAM Roles
       run: |
@@ -183,7 +194,14 @@ jobs:
     - name: Update Cloud Function via Terraform
       working-directory: ./terraform
       run: |
-        terraform apply -auto-approve
+        if [ "${{ steps.download-state-cf.outcome }}" = "failure" ]; then
+          echo "🔄 State artifact missing - creating fresh plan and applying..."
+          terraform plan -out=fresh-tfplan
+          terraform apply -auto-approve fresh-tfplan
+        else
+          echo "✅ Using shared state for targeted apply..."
+          terraform apply -auto-approve
+        fi
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
         TF_VAR_environment: ${{ env.ENVIRONMENT }}
@@ -279,7 +297,14 @@ jobs:
     - name: Deploy Dataflow Job via Terraform
       working-directory: ./terraform
       run: |
-        terraform apply -auto-approve
+        if [ "${{ steps.download-state-df.outcome }}" = "failure" ]; then
+          echo "🔄 State artifact missing - creating fresh plan and applying..."
+          terraform plan -out=fresh-tfplan
+          terraform apply -auto-approve fresh-tfplan
+        else
+          echo "✅ Using shared state for targeted apply..."
+          terraform apply -auto-approve
+        fi
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
         TF_VAR_environment: ${{ env.ENVIRONMENT }}
