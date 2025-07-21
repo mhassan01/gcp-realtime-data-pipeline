@@ -55,6 +55,17 @@ jobs:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
         TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
+    - name: Debug Terraform Files
+      run: |
+        echo "📁 Checking terraform directory contents..."
+        ls -la terraform/
+        echo "🔍 Checking for .terraform directory..."
+        ls -la terraform/.terraform/ || echo "❌ .terraform directory not found"
+        echo "🔍 Checking for .terraform.lock.hcl..."
+        ls -la terraform/.terraform.lock.hcl || echo "❌ .terraform.lock.hcl not found"
+        echo "🔍 Checking for tfplan..."
+        ls -la terraform/tfplan || echo "❌ tfplan not found"
+
     - name: Upload Terraform Plan
       uses: actions/upload-artifact@v4
       with:
@@ -66,7 +77,7 @@ jobs:
       with:
         name: terraform-state
         path: |
-          terraform/.terraform/
+          terraform/.terraform
           terraform/.terraform.lock.hcl
 
   terraform-apply:
@@ -103,6 +114,15 @@ jobs:
       with:
         name: terraform-state
         path: terraform/
+      continue-on-error: true
+      id: download-state
+
+    - name: Fallback Terraform Init (if state not available)
+      if: steps.download-state.outcome == 'failure'
+      working-directory: ./terraform
+      run: |
+        echo "⚠️ Terraform state artifact not found, running fresh init..."
+        terraform init
 
     - name: Terraform Apply
       working-directory: ./terraform
@@ -150,6 +170,15 @@ jobs:
       with:
         name: terraform-state
         path: terraform/
+      continue-on-error: true
+      id: download-state-cf
+
+    - name: Fallback Terraform Init (if state not available)
+      if: steps.download-state-cf.outcome == 'failure'
+      working-directory: ./terraform
+      run: |
+        echo "⚠️ Terraform state artifact not found, running fresh init..."
+        terraform init
 
     - name: Update Cloud Function via Terraform
       working-directory: ./terraform
@@ -237,6 +266,15 @@ jobs:
       with:
         name: terraform-state
         path: terraform/
+      continue-on-error: true
+      id: download-state-df
+
+    - name: Fallback Terraform Init (if state not available)
+      if: steps.download-state-df.outcome == 'failure'
+      working-directory: ./terraform
+      run: |
+        echo "⚠️ Terraform state artifact not found, running fresh init..."
+        terraform init
 
     - name: Deploy Dataflow Job via Terraform
       working-directory: ./terraform
