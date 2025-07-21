@@ -50,7 +50,7 @@ gcloud run services delete ${ENVIRONMENT}-event-generator --region=$REGION --qui
 
 # Delete Cloud Functions
 echo "⚡ Deleting Cloud Functions..."
-gcloud functions delete ${ENVIRONMENT}-bigquery-table-manager --region=$REGION --quiet --async || echo "Cloud Function not found or already deleted."
+gcloud functions delete ${ENVIRONMENT}-bigquery-table-manager --region=$REGION --quiet || echo "Cloud Function not found or already deleted."
 
 # Delete BigQuery dataset
 echo "📊 Deleting BigQuery dataset..."

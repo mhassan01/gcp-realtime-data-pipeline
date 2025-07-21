@@ -48,63 +48,6 @@ resource "google_storage_bucket" "terraform_state" {
   }
 }
 
-# Import existing resources to prevent "already exists" errors.
-# This is useful for CI/CD pipelines where resources may not have been cleaned up.
-import {
-  to = google_storage_bucket.terraform_state
-  id = "terraform-state-${var.project_id}"
-}
-
-import {
-  to = google_service_account.dataflow_sa
-  id = "projects/${var.project_id}/serviceAccounts/${var.environment}-dataflow-pipeline-sa@${var.project_id}.iam.gserviceaccount.com"
-}
-
-import {
-  to = google_service_account.table_manager_sa
-  id = "projects/${var.project_id}/serviceAccounts/${var.environment}-table-manager-sa@${var.project_id}.iam.gserviceaccount.com"
-}
-
-import {
-  to = google_service_account.event_generator_sa
-  id = "projects/${var.project_id}/serviceAccounts/${var.environment}-event-generator-sa@${var.project_id}.iam.gserviceaccount.com"
-}
-
-import {
-  to = google_pubsub_topic.dead_letter
-  id = "projects/${var.project_id}/topics/${var.environment}-backend-events-dead-letter"
-}
-
-import {
-  to = google_pubsub_topic.backend_events
-  id = "projects/${var.project_id}/topics/${var.environment}-backend-events-topic"
-}
-
-import {
-  to = google_storage_bucket.raw_events
-  id = "${var.project_id}-${var.environment}-raw-events"
-}
-
-import {
-  to = google_storage_bucket.dataflow_temp
-  id = "${var.project_id}-${var.environment}-dataflow-temp"
-}
-
-import {
-  to = google_storage_bucket.dataflow_templates
-  id = "${var.project_id}-${var.environment}-dataflow-templates"
-}
-
-import {
-  to = google_storage_bucket.function_source
-  id = "${var.project_id}-${var.environment}-function-source"
-}
-
-import {
-  to = google_bigquery_dataset.events_dataset
-  id = "projects/${var.project_id}/datasets/${var.environment}_events_dataset"
-}
-
 # Enable required APIs
 resource "google_project_service" "apis" {
   for_each = toset([
