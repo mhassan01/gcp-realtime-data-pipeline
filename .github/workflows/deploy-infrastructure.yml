@@ -84,60 +84,15 @@ jobs:
         name: terraform-plan
         path: terraform/
 
-    - name: Generate Import Configuration
-      id: generate-imports
-      working-directory: ./terraform
-      run: |
-        cat > import.tf <<EOF
-        import {
-          to = google_storage_bucket.terraform_state
-          id = "terraform-state-${{ env.PROJECT_ID }}"
-        }
-        import {
-          to = google_service_account.dataflow_sa
-          id = "projects/${{ env.PROJECT_ID }}/serviceAccounts/${{ env.ENVIRONMENT }}-dataflow-pipeline-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
-        }
-        import {
-          to = google_service_account.table_manager_sa
-          id = "projects/${{ env.PROJECT_ID }}/serviceAccounts/${{ env.ENVIRONMENT }}-table-manager-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
-        }
-        import {
-          to = google_service_account.event_generator_sa
-          id = "projects/${{ env.PROJECT_ID }}/serviceAccounts/${{ env.ENVIRONMENT }}-event-generator-sa@${{ env.PROJECT_ID }}.iam.gserviceaccount.com"
-        }
-        import {
-          to = google_pubsub_topic.dead_letter
-          id = "projects/${{ env.PROJECT_ID }}/topics/${{ env.ENVIRONMENT }}-backend-events-dead-letter"
-        }
-        import {
-          to = google_pubsub_topic.backend_events
-          id = "projects/${{ env.PROJECT_ID }}/topics/${{ env.ENVIRONMENT }}-backend-events-topic"
-        }
-        import {
-          to = google_storage_bucket.raw_events
-          id = "${{ env.PROJECT_ID }}-${{ env.ENVIRONMENT }}-raw-events"
-        }
-        import {
-          to = google_storage_bucket.dataflow_temp
-          id = "${{ env.PROJECT_ID }}-${{ env.ENVIRONMENT }}-dataflow-temp"
-        }
-        import {
-          to = google_storage_bucket.dataflow_templates
-          id = "${{ env.PROJECT_ID }}-${{ env.ENVIRONMENT }}-dataflow-templates"
-        }
-        import {
-          to = google_storage_bucket.function_source
-          id = "${{ env.PROJECT_ID }}-${{ env.ENVIRONMENT }}-function-source"
-        }
-        import {
-          to = google_bigquery_dataset.events_dataset
-          id = "projects/${{ env.PROJECT_ID }}/datasets/${{ env.ENVIRONMENT }}_events_dataset"
-        }
-        EOF
-
     - name: Terraform Init
       working-directory: ./terraform
       run: terraform init
+
+    - name: Import Existing Resources
+      run: |
+        echo "🔄 Importing existing resources to prevent 409 conflicts..."
+        chmod +x ./scripts/import-existing-resources.sh
+        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
     - name: Terraform Apply
       working-directory: ./terraform
@@ -342,31 +297,6 @@ jobs:
       run: terraform init
       continue-on-error: true
 
-    - name: Import Existing Resources (Handle Conflicts)
-      working-directory: ./terraform
-      run: |
-        ENV="${{ steps.env.outputs.environment }}"
-        PROJECT_ID="${{ env.PROJECT_ID }}"
-        
-        echo "Attempting to import existing resources to handle conflicts..."
-        
-        # Import Pub/Sub topics if they exist
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" \
-          google_pubsub_topic.backend_events \
-          "projects/$PROJECT_ID/topics/$ENV-backend-events-topic" || true
-          
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" \
-          google_pubsub_topic.dead_letter \
-          "projects/$PROJECT_ID/topics/$ENV-backend-events-dead-letter" || true
-          
-        # Import BigQuery dataset if it exists
-        terraform import -var="project_id=$PROJECT_ID" -var="environment=$ENV" \
-          google_bigquery_dataset.events_dataset \
-          "projects/$PROJECT_ID/datasets/${ENV}_events_dataset" || true
-          
-        echo "Import completed (errors expected for non-existing resources)"
-      continue-on-error: true
-
     - name: Run Comprehensive Cleanup
       run: |
         chmod +x ./scripts/cleanup-all-resources.sh
@@ -375,87 +305,72 @@ jobs:
         PROJECT_ID="${{ env.PROJECT_ID }}"
         REGION="${{ env.REGION }}"
         
-        echo "🧹 Starting comprehensive cleanup for environment: $ENV"
-        echo "Project ID: $PROJECT_ID"
+        echo "🧹 Starting enhanced cleanup for environment: $ENV"
+        echo "📋 Project ID: $PROJECT_ID"
+        echo "📋 Region: $REGION"
+        echo "⚠️  Note: Some permission errors are expected in CI/CD environments"
+        echo ""
         
-        # Run our comprehensive cleanup script
+        # Run our enhanced cleanup script
         ./scripts/cleanup-all-resources.sh "$PROJECT_ID" "$ENV" "$REGION"
       continue-on-error: true
 
-    - name: Manual Resource Cleanup (Fallback)
+    - name: Verify Cleanup Results
       if: always()
       run: |
         ENV="${{ steps.env.outputs.environment }}"
         PROJECT_ID="${{ env.PROJECT_ID }}"
         REGION="${{ env.REGION }}"
         
-        echo "🔄 Running manual cleanup as fallback for demo environment..."
-        
-        # Stop and delete Dataflow jobs
-        echo "Cleaning up Dataflow jobs..."
-        gcloud dataflow jobs list --region=$REGION --filter="name:$ENV-realtime-data-pipeline" --format="value(id)" | while read job_id; do
-          if [ ! -z "$job_id" ]; then
-            echo "Stopping Dataflow job: $job_id"
-            gcloud dataflow jobs cancel $job_id --region=$REGION || true
-          fi
-        done
-        
-        # Delete Cloud Run services
-        echo "Cleaning up Cloud Run services..."
-        gcloud run services delete "$ENV-event-generator" --region=$REGION --quiet || true
-        
-        # Delete Cloud Functions
-        echo "Cleaning up Cloud Functions..."
-        gcloud functions delete "$ENV-table-manager" --region=$REGION --quiet || true
-        
-        # Delete Pub/Sub topics and subscriptions
-        echo "Cleaning up Pub/Sub resources..."
-        gcloud pubsub subscriptions delete "$ENV-backend-events-subscription" || true
-        gcloud pubsub topics delete "$ENV-backend-events-topic" || true
-        gcloud pubsub topics delete "$ENV-backend-events-dead-letter" || true
-        
-        # Delete BigQuery dataset (demo environment)
-        echo "Cleaning up BigQuery dataset..."
-        bq rm -r -f -d "$PROJECT_ID:${ENV}_events_dataset" || true
-        
-        # Delete Cloud Storage buckets (demo environment)
-        echo "Cleaning up Cloud Storage buckets..."
-        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-raw-events" || true
-        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-temp" || true
-        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-dataflow-templates" || true
-        gsutil -m rm -r "gs://$PROJECT_ID-$ENV-function-source" || true
-        
-        # Delete Container Registry images
-        echo "Cleaning up Container Registry images..."
-        gcloud container images list --repository=gcr.io/$PROJECT_ID --format="value(name)" | grep -E "(event-generator|table-manager)" | while read image; do
-          gcloud container images delete $image --force-delete-tags --quiet || true
-        done
-        
-        # Delete service accounts (demo environment)
-        echo "Cleaning up service accounts..."
-        gcloud iam service-accounts delete "$ENV-dataflow-pipeline-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
-        gcloud iam service-accounts delete "$ENV-table-manager-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
-        gcloud iam service-accounts delete "$ENV-event-generator-sa@$PROJECT_ID.iam.gserviceaccount.com" --quiet || true
-        
-        echo "🏁 Manual cleanup completed for demo environment"
-      continue-on-error: true
-
-    - name: Cleanup Summary
-      if: always()
-      run: |
-        ENV="${{ steps.env.outputs.environment }}"
-        echo "🔍 Demo Project Cleanup Summary"
-        echo "============================================="
-        echo "Environment: $ENV (demo only)"
-        echo "✅ Comprehensive cleanup script executed"
-        echo "✅ Manual fallback cleanup executed"
-        echo "⚠️  Some resources may require manual intervention"
         echo ""
-        echo "To verify cleanup completion, run:"
-        echo "  gcloud dataflow jobs list --region=${{ env.REGION }}"
-        echo "  gcloud run services list --region=${{ env.REGION }}"
-        echo "  gcloud functions list --region=${{ env.REGION }}"
-        echo "  gcloud pubsub topics list"
-        echo "  gcloud iam service-accounts list"
+        echo "🔍 Verifying cleanup results..."
+        echo "---------------------------------------------"
+        
+        # Check for remaining resources (non-blocking)
+        echo "📋 Checking for remaining resources:"
+        
+        # Check Cloud Run services
+        RUN_SERVICES=$(gcloud run services list --region=$REGION --format="value(metadata.name)" --filter="metadata.name:$ENV" || echo "")
+        if [ -n "$RUN_SERVICES" ]; then
+          echo "⚠️  Remaining Cloud Run services: $RUN_SERVICES"
+        else
+          echo "✅ No Cloud Run services found"
+        fi
+        
+        # Check Cloud Functions
+        FUNCTIONS=$(gcloud functions list --region=$REGION --format="value(name)" --filter="name:$ENV" || echo "")
+        if [ -n "$FUNCTIONS" ]; then
+          echo "⚠️  Remaining Cloud Functions: $FUNCTIONS"
+        else
+          echo "✅ No Cloud Functions found"
+        fi
+        
+        # Check Pub/Sub topics
+        TOPICS=$(gcloud pubsub topics list --format="value(name)" --filter="name:$ENV" || echo "")
+        if [ -n "$TOPICS" ]; then
+          echo "⚠️  Remaining Pub/Sub topics: $TOPICS"
+        else
+          echo "✅ No Pub/Sub topics found"
+        fi
+        
+        # Check Storage buckets
+        BUCKETS=$(gsutil ls -p $PROJECT_ID | grep -E "$ENV|terraform-state" | head -5 || echo "")
+        if [ -n "$BUCKETS" ]; then
+          echo "⚠️  Remaining Storage buckets:"
+          echo "$BUCKETS" | head -3
+        else
+          echo "✅ No Storage buckets found"
+        fi
+        
         echo ""
-        echo "📧 Please review your GCP console and billing to ensure all demo resources are cleaned up" 
+        echo "📊 Cleanup Summary:"
+        echo "  ✅ Enhanced cleanup script executed"
+        echo "  ✅ Resource existence checks performed"
+        echo "  ✅ Permission errors handled gracefully"
+        echo "  📋 Manual verification completed above"
+        echo ""
+        echo "💡 Next steps:"
+        echo "  1. Check GCP Console for any remaining resources"
+        echo "  2. Service accounts may need manual deletion with elevated permissions"
+        echo "  3. Verify billing to ensure all resources are stopped"
+      continue-on-error: true 
