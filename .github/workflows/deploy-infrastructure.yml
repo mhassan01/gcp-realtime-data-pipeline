@@ -322,12 +322,13 @@ jobs:
         
         ENV="${{ steps.env.outputs.environment }}"
         PROJECT_ID="${{ env.PROJECT_ID }}"
+        REGION="${{ env.REGION }}"
         
         echo "🧹 Starting comprehensive cleanup for environment: $ENV"
         echo "Project ID: $PROJECT_ID"
         
         # Run our comprehensive cleanup script
-        ./scripts/cleanup-all-resources.sh --auto-approve --project-id="$PROJECT_ID" --environment="$ENV"
+        ./scripts/cleanup-all-resources.sh "$PROJECT_ID" "$ENV" "$REGION"
       continue-on-error: true
 
     - name: Manual Resource Cleanup (Fallback)
