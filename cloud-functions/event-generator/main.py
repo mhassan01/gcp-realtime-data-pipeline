@@ -224,6 +224,7 @@ async def startup_event():
             logger.warning("PROJECT_ID environment variable not set, generator will be initialized on first use")
             return
         
+        # Initialize generator without waiting for Pub/Sub connection
         generator = EventGenerator(project_id, environment)
         logger.info(f"Event generator initialized for project: {project_id}, environment: {environment}")
     except Exception as e:
@@ -255,6 +256,16 @@ async def health_check():
         "active_tasks": len(generation_tasks),
         "timestamp": datetime.utcnow().isoformat() + "Z"
     }
+
+@app.get("/readiness")
+async def readiness_check():
+    """Readiness probe for Cloud Run"""
+    return {"status": "ready", "timestamp": datetime.utcnow().isoformat() + "Z"}
+
+@app.get("/liveness")
+async def liveness_check():
+    """Liveness probe for Cloud Run"""
+    return {"status": "alive", "timestamp": datetime.utcnow().isoformat() + "Z"}
 
 @app.post("/generate/single/{event_type}")
 async def generate_single_event(event_type: str):

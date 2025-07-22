@@ -54,7 +54,7 @@ cd $SOURCE_DIR
 gcloud builds submit --tag $IMAGE_NAME .
 
 # Go back to root directory
-cd ..
+cd ../..
 
 # Deploy to Cloud Run
 echo "🚀 Deploying to Cloud Run..."
@@ -66,11 +66,14 @@ gcloud run deploy $SERVICE_NAME \
     --set-env-vars PROJECT_ID=$PROJECT_ID,ENVIRONMENT=$ENVIRONMENT \
     --memory 1Gi \
     --cpu 1 \
-    --concurrency 100 \
-    --timeout 900 \
-    --max-instances 10 \
+    --concurrency 80 \
+    --timeout 600 \
+    --max-instances 5 \
     --min-instances 0 \
     --port 8080 \
+    --execution-environment gen2 \
+    --cpu-boost \
+    --startup-cpu-boost \
     --quiet
 
 # Get service URL

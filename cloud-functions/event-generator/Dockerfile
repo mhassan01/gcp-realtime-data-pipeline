@@ -4,6 +4,7 @@ FROM python:3.11-slim
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV PORT=8080
 
 # Set work directory
 WORKDIR /app
@@ -31,9 +32,9 @@ USER appuser
 # Expose port 8080 (Cloud Run default)
 EXPOSE 8080
 
-# Health check
-HEALTHCHECK --interval=60s --timeout=30s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:$PORT/health || exit 1
+# Health check with explicit port
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
-# Run the application
-CMD uvicorn main:app --host 0.0.0.0 --port $PORT 
+# Run the application with explicit port and optimized settings
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--timeout-keep-alive", "60"] 
