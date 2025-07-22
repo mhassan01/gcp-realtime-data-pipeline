@@ -36,5 +36,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# Run the application with explicit port and optimized settings
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1", "--timeout-keep-alive", "60"] 
+# Run the application with Gunicorn for better production stability
+CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-w", "1", "--threads", "8", "--timeout", "0", "--bind", "0.0.0.0:8080", "main:app"] 
