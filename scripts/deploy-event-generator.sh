@@ -73,7 +73,6 @@ gcloud run deploy $SERVICE_NAME \
     --port 8080 \
     --execution-environment gen2 \
     --cpu-boost \
-    --startup-cpu-boost \
     --quiet
 
 # Get service URL
