@@ -64,7 +64,7 @@ gcloud run deploy $SERVICE_NAME \
     --region $REGION \
     --allow-unauthenticated \
     --set-env-vars PROJECT_ID=$PROJECT_ID,ENVIRONMENT=$ENVIRONMENT \
-    --memory 1Gi \
+    --memory 512Mi \
     --cpu 1 \
     --concurrency 80 \
     --timeout 600 \
@@ -73,6 +73,7 @@ gcloud run deploy $SERVICE_NAME \
     --port 8080 \
     --execution-environment gen2 \
     --cpu-boost \
+    --service-timeout 900 \
     --quiet
 
 # Get service URL

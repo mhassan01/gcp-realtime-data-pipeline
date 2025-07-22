@@ -32,8 +32,8 @@ USER appuser
 # Expose port 8080 (Cloud Run default)
 EXPOSE 8080
 
-# Health check with explicit port
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+# Health check with explicit port - less aggressive for faster startup
+HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
 # Run the application with explicit port and optimized settings

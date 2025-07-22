@@ -22,11 +22,23 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Initialize Pub/Sub publisher
-publisher = pubsub_v1.PublisherClient()
+# Lazy Pub/Sub publisher - will be initialized when needed
+publisher = None
 
 # Global state for background tasks
 generation_tasks = {}
+
+def get_publisher():
+    """Get or create Pub/Sub publisher client"""
+    global publisher
+    if publisher is None:
+        try:
+            publisher = pubsub_v1.PublisherClient()
+            logger.info("Pub/Sub publisher client initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize Pub/Sub client: {e}")
+            raise
+    return publisher
 
 class GenerationConfig(BaseModel):
     """Configuration for event generation"""
@@ -41,7 +53,7 @@ class EventGenerator:
     def __init__(self, project_id: str, environment: str = "dev"):
         self.project_id = project_id
         self.environment = environment
-        self.topic_path = publisher.topic_path(project_id, f"{environment}-backend-events-topic")
+        self.topic_path = get_publisher().topic_path(project_id, f"{environment}-backend-events-topic")
         
         # Sample data for realistic generation
         self.customers = [f"customer-{i:03d}" for i in range(1, 101)]
@@ -183,7 +195,7 @@ class EventGenerator:
         """Publish event to Pub/Sub"""
         try:
             message_data = json.dumps(event).encode('utf-8')
-            future = publisher.publish(self.topic_path, message_data)
+            future = get_publisher().publish(self.topic_path, message_data)
             
             # Wait for publish to complete
             message_id = future.result()
@@ -214,23 +226,12 @@ def ensure_generator():
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the event generator on startup"""
+    """Fast startup - don't initialize heavy components"""
     global generator
-    try:
-        project_id = os.environ.get("PROJECT_ID")
-        environment = os.environ.get("ENVIRONMENT", "dev")
-        
-        if not project_id:
-            logger.warning("PROJECT_ID environment variable not set, generator will be initialized on first use")
-            return
-        
-        # Initialize generator without waiting for Pub/Sub connection
-        generator = EventGenerator(project_id, environment)
-        logger.info(f"Event generator initialized for project: {project_id}, environment: {environment}")
-    except Exception as e:
-        logger.error(f"Failed to initialize generator during startup: {e}")
-        # Don't fail startup, allow initialization on first use
-        pass
+    logger.info("Event generator service starting up...")
+    # Don't initialize EventGenerator or Pub/Sub during startup
+    # This will be done lazily when first needed
+    logger.info("Event generator service ready for requests")
 
 @app.get("/")
 async def root():
@@ -266,6 +267,23 @@ async def readiness_check():
 async def liveness_check():
     """Liveness probe for Cloud Run"""
     return {"status": "alive", "timestamp": datetime.utcnow().isoformat() + "Z"}
+
+@app.get("/debug")
+async def debug_info():
+    """Debug information for troubleshooting"""
+    import os
+    return {
+        "status": "debug",
+        "environment_vars": {
+            "PROJECT_ID": os.environ.get("PROJECT_ID", "not-set"),
+            "ENVIRONMENT": os.environ.get("ENVIRONMENT", "not-set"),
+            "PORT": os.environ.get("PORT", "not-set")
+        },
+        "generator_initialized": generator is not None,
+        "publisher_initialized": publisher is not None,
+        "active_tasks": len(generation_tasks),
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    }
 
 @app.post("/generate/single/{event_type}")
 async def generate_single_event(event_type: str):
