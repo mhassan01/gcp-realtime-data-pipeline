@@ -1,11 +1,3 @@
-# Real-time Data Pipeline Infrastructure
-# 
-# This Terraform configuration creates the core infrastructure for a GCP real-time data pipeline.
-# Applications (Cloud Function, Cloud Run, Dataflow jobs) are deployed via scripts to avoid 
-# dependency issues with source code, Docker images, and templates.
-#
-# Deploy order: 1) terraform apply, 2) run scripts for applications
-
 terraform {
   required_version = ">= 1.0"
   required_providers {
@@ -19,33 +11,6 @@ terraform {
 provider "google" {
   project = var.project_id
   region  = var.region
-}
-
-# Terraform state bucket
-resource "google_storage_bucket" "terraform_state" {
-  name     = "terraform-state-${var.project_id}"
-  location = var.region
-
-  versioning {
-    enabled = true
-  }
-
-  lifecycle_rule {
-    condition {
-      age = 30
-    }
-    action {
-      type = "Delete"
-    }
-  }
-
-  public_access_prevention = "enforced"
-
-  labels = {
-    environment = var.environment
-    managed_by  = "terraform"
-    purpose     = "terraform-state"
-  }
 }
 
 # Enable required APIs
@@ -236,8 +201,3 @@ resource "google_bigquery_dataset" "events_dataset" {
     purpose     = "events-data"
   }
 }
-
-# Applications (Cloud Function, Cloud Run, Dataflow job) are deployed via scripts:
-# - scripts/deploy-cloud-function.sh
-# - scripts/deploy-event-generator.sh  
-# - scripts/deploy-dataflow-template.sh

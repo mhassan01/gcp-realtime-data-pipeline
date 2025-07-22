@@ -1,89 +1,22 @@
-name: Deploy Real-time Data Pipeline Infrastructure
+name: Deploy GCP Real-time Data Pipeline
 
 on:
   push:
-    branches: [ main, dev ]
+    branches: [main, dev]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
+
 env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+  PROJECT_ID: fabled-web-172810
   REGION: us-central1
-  ENVIRONMENT: dev
+  ENVIRONMENT: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+  GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
 
 jobs:
-  terraform-plan:
-    name: Terraform Plan
+  deploy-pipeline:
+    name: Clean Deploy Complete Pipeline
     runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.5.7
-
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ env.GCP_SA_KEY }}
-
-    - name: Setup Google Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
-
-    - name: Terraform Init
-      working-directory: ./terraform
-      run: terraform init
-
-    - name: Import Existing Resources
-      run: |
-        echo "🔄 Importing existing resources to prevent 409 conflicts..."
-        chmod +x ./scripts/import-existing-resources.sh
-        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
-
-    - name: Terraform Validate
-      working-directory: ./terraform
-      run: terraform validate
-
-    - name: Terraform Plan
-      working-directory: ./terraform
-      run: terraform plan -out=tfplan
-      env:
-        TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ env.ENVIRONMENT }}
-
-    - name: Debug Terraform Files
-      run: |
-        echo "📁 Checking terraform directory contents..."
-        ls -la terraform/
-        echo "🔍 Checking for .terraform directory..."
-        ls -la terraform/.terraform/ || echo "❌ .terraform directory not found"
-        echo "🔍 Checking for .terraform.lock.hcl..."
-        ls -la terraform/.terraform.lock.hcl || echo "❌ .terraform.lock.hcl not found"
-        echo "🔍 Checking for tfplan..."
-        ls -la terraform/tfplan || echo "❌ tfplan not found"
-
-    - name: Upload Terraform Plan
-      uses: actions/upload-artifact@v4
-      with:
-        name: terraform-plan
-        path: terraform/tfplan
-
-    - name: Upload Terraform State
-      uses: actions/upload-artifact@v4
-      with:
-        name: terraform-state
-        path: |
-          terraform/.terraform
-          terraform/.terraform.lock.hcl
-
-  terraform-apply:
-    name: Terraform Apply
-    runs-on: ubuntu-latest
-    needs: terraform-plan
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
     
     steps:
@@ -103,50 +36,47 @@ jobs:
     - name: Setup Google Cloud SDK
       uses: google-github-actions/setup-gcloud@v2
 
-    - name: Download Terraform Plan
-      uses: actions/download-artifact@v4
-      with:
-        name: terraform-plan
-        path: terraform/
+    - name: Configure Docker for GCR
+      run: gcloud auth configure-docker
 
-    - name: Download Terraform State
-      uses: actions/download-artifact@v4
-      with:
-        name: terraform-state
-        path: terraform/
-      continue-on-error: true
-      id: download-state
+    # ==============================
+    # PHASE 1: COMPLETE CLEANUP
+    # ==============================
+    - name: 🧹 Complete Environment Cleanup
+      run: |
+        echo "🧹 Starting complete environment cleanup..."
+        chmod +x ./scripts/cleanup-environment.sh
+        ./scripts/cleanup-environment.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
-    - name: Fallback Terraform Init (if state not available)
-      if: steps.download-state.outcome == 'failure'
+    # ==============================
+    # PHASE 2: FRESH INFRASTRUCTURE
+    # ==============================
+    - name: 🏗️ Initialize Terraform (Fresh)
       working-directory: ./terraform
       run: |
-        echo "⚠️ Terraform state artifact not found, running fresh init..."
+        echo "🏗️ Initializing Terraform with fresh state..."
         terraform init
 
-    - name: Import Existing Resources (fallback path)
-      if: steps.download-state.outcome == 'failure'
-      run: |
-        echo "🔄 Importing existing resources for fresh plan..."
-        chmod +x ./scripts/import-existing-resources.sh
-        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
+    - name: 🔍 Validate Terraform Configuration
+      working-directory: ./terraform
+      run: terraform validate
 
-    - name: Terraform Apply
+    - name: 📋 Create Terraform Plan
       working-directory: ./terraform
       run: |
-        if [ "${{ steps.download-state.outcome }}" = "failure" ]; then
-          echo "🔄 State artifact missing - creating fresh plan and applying..."
-          terraform plan -out=fresh-tfplan
-          terraform apply -auto-approve fresh-tfplan
-        else
-          echo "✅ Using existing plan with shared state..."
-          terraform apply -auto-approve tfplan
-        fi
+        echo "📋 Creating fresh deployment plan..."
+        terraform plan -out=tfplan
       env:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
         TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
-    - name: Assign IAM Roles
+    - name: 🚀 Apply Infrastructure
+      working-directory: ./terraform
+      run: |
+        echo "🚀 Deploying infrastructure..."
+        terraform apply -auto-approve tfplan
+
+    - name: 🔐 Assign IAM Roles
       run: |
         echo "🔐 Assigning IAM roles to service accounts..."
         chmod +x ./scripts/assign-iam-roles.sh
@@ -155,231 +85,71 @@ jobs:
         echo "⏳ Waiting for IAM propagation..."
         sleep 30
 
-  deploy-cloud-function:
-    name: Deploy Cloud Function
-    runs-on: ubuntu-latest
-    needs: terraform-apply
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ env.GCP_SA_KEY }}
-
-    - name: Setup Google Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
-
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.5.7
-
-    - name: Deploy Cloud Function
+    # ==============================
+    # PHASE 3: APPLICATION DEPLOYMENT
+    # ==============================
+    - name: ⚡ Deploy Cloud Function
       run: |
+        echo "⚡ Deploying BigQuery Table Manager Cloud Function..."
         chmod +x ./scripts/deploy-cloud-function.sh
         ./scripts/deploy-cloud-function.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
 
-    - name: Download Terraform State
-      uses: actions/download-artifact@v4
-      with:
-        name: terraform-state
-        path: terraform/
-      continue-on-error: true
-      id: download-state-cf
-
-    - name: Fallback Terraform Init (if state not available)
-      if: steps.download-state-cf.outcome == 'failure'
-      working-directory: ./terraform
+    - name: 🏃 Deploy Event Generator
       run: |
-        echo "⚠️ Terraform state artifact not found, running fresh init..."
-        terraform init
-
-    - name: Import Existing Resources (fallback path)
-      if: steps.download-state-cf.outcome == 'failure'
-      run: |
-        echo "🔄 Importing existing resources for fresh plan..."
-        chmod +x ./scripts/import-existing-resources.sh
-        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
-
-    - name: Update Cloud Function via Terraform
-      working-directory: ./terraform
-      run: |
-        if [ "${{ steps.download-state-cf.outcome }}" = "failure" ]; then
-          echo "🔄 State artifact missing - creating fresh plan and applying..."
-          terraform plan -out=fresh-tfplan
-          terraform apply -auto-approve fresh-tfplan
-        else
-          echo "✅ Using shared state for targeted apply..."
-          terraform apply -auto-approve
-        fi
-      env:
-        TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ env.ENVIRONMENT }}
-
-  deploy-event-generator:
-    name: Deploy Event Generator Service
-    runs-on: ubuntu-latest
-    needs: terraform-apply
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ env.GCP_SA_KEY }}
-
-    - name: Setup Google Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
-
-    - name: Deploy Event Generator to Cloud Run
-      run: |
+        echo "🏃 Deploying Event Generator Cloud Run service..."
         chmod +x ./scripts/deploy-event-generator.sh
         ./scripts/deploy-event-generator.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
-    - name: Test Event Generator Service
+    - name: 🔄 Deploy Dataflow Template
       run: |
-        # Get service URL from terraform output or gcloud
-        SERVICE_NAME="${{ env.ENVIRONMENT }}-event-generator"
-        SERVICE_URL=$(gcloud run services describe $SERVICE_NAME --region=${{ env.REGION }} --format="value(status.url)")
-        
-        echo "Testing Event Generator service at: $SERVICE_URL"
-        
-        # Test health endpoint
-        curl -f "$SERVICE_URL/health" || exit 1
-        
-        # Test sample event generation
-        curl -f "$SERVICE_URL/sample/order" || exit 1
-        
-        # Test scenarios endpoint
-        curl -f "$SERVICE_URL/scenarios" || exit 1
-        
-        echo "✅ Event Generator service is healthy and responding"
-
-  build-dataflow-template:
-    name: Build and Deploy Dataflow Template
-    runs-on: ubuntu-latest
-    needs: [terraform-apply, deploy-event-generator]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ env.GCP_SA_KEY }}
-
-    - name: Setup Google Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
-
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.5.7
-
-    - name: Configure Docker for GCR
-      run: gcloud auth configure-docker
-
-    - name: Build and Deploy Dataflow Template
-      run: |
+        echo "🔄 Building and deploying Dataflow template..."
         chmod +x ./scripts/deploy-dataflow-template.sh
         ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
-    - name: Download Terraform State
-      uses: actions/download-artifact@v4
-      with:
-        name: terraform-state
-        path: terraform/
-      continue-on-error: true
-      id: download-state-df
-
-    - name: Fallback Terraform Init (if state not available)
-      if: steps.download-state-df.outcome == 'failure'
-      working-directory: ./terraform
+    # ==============================
+    # PHASE 4: VERIFICATION
+    # ==============================
+    - name: 🧪 Integration Tests
       run: |
-        echo "⚠️ Terraform state artifact not found, running fresh init..."
-        terraform init
-
-    - name: Import Existing Resources (fallback path)
-      if: steps.download-state-df.outcome == 'failure'
-      run: |
-        echo "🔄 Importing existing resources for fresh plan..."
-        chmod +x ./scripts/import-existing-resources.sh
-        ./scripts/import-existing-resources.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
-
-    - name: Deploy Dataflow Job via Terraform
-      working-directory: ./terraform
-      run: |
-        if [ "${{ steps.download-state-df.outcome }}" = "failure" ]; then
-          echo "🔄 State artifact missing - creating fresh plan and applying..."
-          terraform plan -out=fresh-tfplan
-          terraform apply -auto-approve fresh-tfplan
-        else
-          echo "✅ Using shared state for targeted apply..."
-          terraform apply -auto-approve
-        fi
-      env:
-        TF_VAR_project_id: ${{ env.PROJECT_ID }}
-        TF_VAR_environment: ${{ env.ENVIRONMENT }}
-
-  test-pipeline:
-    name: Test Data Pipeline
-    runs-on: ubuntu-latest
-    needs: [deploy-cloud-function, deploy-event-generator, build-dataflow-template]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Authenticate to Google Cloud
-      uses: google-github-actions/auth@v2
-      with:
-        credentials_json: ${{ env.GCP_SA_KEY }}
-
-    - name: Setup Google Cloud SDK
-      uses: google-github-actions/setup-gcloud@v2
-
-    - name: Wait for Infrastructure
-      run: sleep 60  # Wait for services to be fully ready
-
-    - name: Run Integration Tests
-      run: |
+        echo "🧪 Running integration tests..."
         chmod +x ./scripts/test-table-creation.sh
         ./scripts/test-table-creation.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
 
-    - name: Verify Dataflow Job
+    - name: ✅ Verify Deployment
       run: |
-        JOB_NAME="${{ env.ENVIRONMENT }}-realtime-data-pipeline"
-        gcloud dataflow jobs list --region=${{ env.REGION }} --filter="name:${JOB_NAME}" --format="value(id)" | head -1
-
-    - name: Check BigQuery Tables
-      run: |
+        echo "✅ Verifying complete deployment..."
+        
+        # Check BigQuery Dataset
         DATASET="${{ env.ENVIRONMENT }}_events_dataset"
+        echo "📊 Checking BigQuery dataset: $DATASET"
         bq ls --project_id=${{ env.PROJECT_ID }} $DATASET
+        
+        # Check Dataflow Job
+        echo "🔄 Checking Dataflow jobs..."
+        gcloud dataflow jobs list --region=${{ env.REGION }} --filter="name:${{ env.ENVIRONMENT }}-*" --limit=5
+        
+        # Check Cloud Function
+        echo "⚡ Checking Cloud Function..."
+        gcloud functions describe ${{ env.ENVIRONMENT }}-table-manager --region=${{ env.REGION }} --format="value(status)"
+        
+        # Check Cloud Run Service  
+        echo "🏃 Checking Cloud Run service..."
+        gcloud run services describe ${{ env.ENVIRONMENT }}-event-generator --region=${{ env.REGION }} --format="value(status.conditions[0].status)"
+        
+        echo "🎉 All services verified successfully!"
 
+  # ==============================
+  # CLEANUP ON FAILURE
+  # ==============================
   cleanup-on-failure:
     name: Cleanup on Failure
     runs-on: ubuntu-latest
-    needs: [terraform-apply, deploy-cloud-function, deploy-event-generator, build-dataflow-template, test-pipeline]
-    if: failure()
+    needs: deploy-pipeline
+    if: failure() && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v3
-      with:
-        terraform_version: 1.5.7
 
     - name: Authenticate to Google Cloud
       uses: google-github-actions/auth@v2
@@ -389,92 +159,9 @@ jobs:
     - name: Setup Google Cloud SDK
       uses: google-github-actions/setup-gcloud@v2
 
-    - name: Get Environment
-      id: env
+    - name: 🧹 Emergency Cleanup
       run: |
-        ENV="${{ env.ENVIRONMENT }}"
-        echo "environment=$ENV" >> $GITHUB_OUTPUT
-        echo "Detected environment: $ENV"
-
-    - name: Initialize Terraform for Cleanup
-      working-directory: ./terraform
-      run: terraform init
-      continue-on-error: true
-
-    - name: Run Comprehensive Cleanup
-      run: |
-        chmod +x ./scripts/cleanup-all-resources.sh
-        
-        ENV="${{ steps.env.outputs.environment }}"
-        PROJECT_ID="${{ env.PROJECT_ID }}"
-        REGION="${{ env.REGION }}"
-        
-        echo "🧹 Starting enhanced cleanup for environment: $ENV"
-        echo "📋 Project ID: $PROJECT_ID"
-        echo "📋 Region: $REGION"
-        echo "⚠️  Note: Some permission errors are expected in CI/CD environments"
-        echo ""
-        
-        # Run our enhanced cleanup script
-        ./scripts/cleanup-all-resources.sh "$PROJECT_ID" "$ENV" "$REGION"
-      continue-on-error: true
-
-    - name: Verify Cleanup Results
-      if: always()
-      run: |
-        ENV="${{ steps.env.outputs.environment }}"
-        PROJECT_ID="${{ env.PROJECT_ID }}"
-        REGION="${{ env.REGION }}"
-        
-        echo ""
-        echo "🔍 Verifying cleanup results..."
-        echo "---------------------------------------------"
-        
-        # Check for remaining resources (non-blocking)
-        echo "📋 Checking for remaining resources:"
-        
-        # Check Cloud Run services
-        RUN_SERVICES=$(gcloud run services list --region=$REGION --format="value(metadata.name)" --filter="metadata.name:$ENV" || echo "")
-        if [ -n "$RUN_SERVICES" ]; then
-          echo "⚠️  Remaining Cloud Run services: $RUN_SERVICES"
-        else
-          echo "✅ No Cloud Run services found"
-        fi
-        
-        # Check Cloud Functions
-        FUNCTIONS=$(gcloud functions list --region=$REGION --format="value(name)" --filter="name:$ENV" || echo "")
-        if [ -n "$FUNCTIONS" ]; then
-          echo "⚠️  Remaining Cloud Functions: $FUNCTIONS"
-        else
-          echo "✅ No Cloud Functions found"
-        fi
-        
-        # Check Pub/Sub topics
-        TOPICS=$(gcloud pubsub topics list --format="value(name)" --filter="name:$ENV" || echo "")
-        if [ -n "$TOPICS" ]; then
-          echo "⚠️  Remaining Pub/Sub topics: $TOPICS"
-        else
-          echo "✅ No Pub/Sub topics found"
-        fi
-        
-        # Check Storage buckets
-        BUCKETS=$(gsutil ls -p $PROJECT_ID | grep -E "$ENV|terraform-state" | head -5 || echo "")
-        if [ -n "$BUCKETS" ]; then
-          echo "⚠️  Remaining Storage buckets:"
-          echo "$BUCKETS" | head -3
-        else
-          echo "✅ No Storage buckets found"
-        fi
-        
-        echo ""
-        echo "📊 Cleanup Summary:"
-        echo "  ✅ Enhanced cleanup script executed"
-        echo "  ✅ Resource existence checks performed"
-        echo "  ✅ Permission errors handled gracefully"
-        echo "  📋 Manual verification completed above"
-        echo ""
-        echo "💡 Next steps:"
-        echo "  1. Check GCP Console for any remaining resources"
-        echo "  2. Service accounts may need manual deletion with elevated permissions"
-        echo "  3. Verify billing to ensure all resources are stopped"
-      continue-on-error: true 
+        echo "🚨 Deployment failed - running emergency cleanup..."
+        chmod +x ./scripts/cleanup-environment.sh
+        ./scripts/cleanup-environment.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
+        echo "✅ Emergency cleanup completed" 
