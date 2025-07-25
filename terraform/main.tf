@@ -210,7 +210,8 @@ resource "google_eventarc_trigger" "table_manager_trigger" {
   project  = var.project_id
 
   matching_criteria {
-    attribute = "type.googleapis.com/google.pubsub.v1.messagePublished"
+    attribute = "type"
+    value     = "google.cloud.pubsub.topic.v1.messagePublished"
   }
 
   destination {
