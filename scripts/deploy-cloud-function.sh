@@ -59,11 +59,23 @@ fi
 echo "📤 Uploading to Cloud Storage..."
 gsutil cp "$TEMP_DIR/$SOURCE_ARCHIVE" "gs://$BUCKET_NAME/$SOURCE_ARCHIVE"
 
+# Deploy Cloud Function from GCS
+echo "🚀 Deploying Cloud Function..."
+gcloud functions deploy "${ENVIRONMENT}-table-manager" \
+    --gen2 \
+    --region=us-central1 \
+    --trigger-topic="${ENVIRONMENT}-backend-events-topic" \
+    --runtime=python311 \
+    --source="gs://$BUCKET_NAME/$SOURCE_ARCHIVE" \
+    --entry-point=create_or_update_table \
+    --service-account="${ENVIRONMENT}-table-manager-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --set-env-vars=PROJECT_ID=$PROJECT_ID,ENVIRONMENT=$ENVIRONMENT \
+    --quiet
+
 # Clean up
 rm -rf "$TEMP_DIR"
 
-echo "✅ Cloud Function source code deployed successfully!"
+echo "✅ Cloud Function source code deployed and function deployed successfully!"
 echo "📝 Next steps:"
-echo "   1. Run 'terraform apply' to deploy/update the Cloud Function"
-echo "   2. Test by sending events to the Pub/Sub topic"
-echo "   3. Check Cloud Function logs in GCP Console" 
+echo "   1. Test by sending events to the Pub/Sub topic"
+echo "   2. Check Cloud Function logs in GCP Console" 
