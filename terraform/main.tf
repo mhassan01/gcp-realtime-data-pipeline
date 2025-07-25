@@ -202,3 +202,55 @@ resource "google_bigquery_dataset" "events_dataset" {
     purpose     = "events-data"
   }
 }
+
+# Eventarc Trigger for Table Manager Cloud Run Service
+resource "google_eventarc_trigger" "table_manager_trigger" {
+  name     = "${var.environment}-table-manager-trigger"
+  location = var.region
+  project  = var.project_id
+
+  matching_criteria {
+    attribute = "type.googleapis.com/google.pubsub.v1.messagePublished"
+  }
+
+  destination {
+    cloud_run_service {
+      service = "${var.environment}-table-manager"
+      region  = var.region
+    }
+  }
+
+  transport {
+    pubsub {
+      topic = google_pubsub_topic.backend_events.id
+    }
+  }
+
+  service_account = google_service_account.eventarc_trigger_sa.email
+
+  depends_on = [
+    google_project_service.apis,
+    google_service_account.eventarc_trigger_sa
+  ]
+}
+
+# Service Account for the Eventarc Trigger itself
+resource "google_service_account" "eventarc_trigger_sa" {
+  account_id   = "${var.environment}-eventarc-trigger-sa"
+  display_name = "Eventarc Trigger Service Account (${var.environment})"
+  project      = var.project_id
+}
+
+# Grant Eventarc SA permission to receive events from Pub/Sub
+resource "google_project_iam_member" "eventarc_sa_pubsub_subscriber" {
+  project = var.project_id
+  role    = "roles/pubsub.subscriber"
+  member  = format("serviceAccount:%s", google_service_account.eventarc_trigger_sa.email)
+}
+
+# Grant Eventarc SA permission to invoke the Cloud Run service
+resource "google_project_iam_member" "eventarc_sa_run_invoker" {
+  project = var.project_id
+  role    = "roles/run.invoker"
+  member  = format("serviceAccount:%s", google_service_account.eventarc_trigger_sa.email)
+}
