@@ -50,7 +50,6 @@ gcloud run deploy "$SERVICE_NAME" \
     --port=8080 \
     --execution-environment=gen2 \
     --cpu-boost \
-    --startup-timeout=900 \
     --quiet
 
 # After deploying the service, create the Eventarc trigger
