@@ -60,7 +60,7 @@ gcloud eventarc triggers create "${SERVICE_NAME}-trigger" \
     --destination-run-region="$REGION" \
     --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished" \
     --transport-topic="projects/${PROJECT_ID}/topics/${ENVIRONMENT}-backend-events-topic" \
-    --service-account="${PROJECT_ID}-compute@developer.gserviceaccount.com" \
+    --service-account="${ENVIRONMENT}-table-manager-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
     --quiet
 
 echo "✅ Cloud Function service and trigger deployed successfully!"

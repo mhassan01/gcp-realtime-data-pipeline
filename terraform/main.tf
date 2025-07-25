@@ -202,3 +202,16 @@ resource "google_bigquery_dataset" "events_dataset" {
     purpose     = "events-data"
   }
 }
+
+# IAM permissions for table-manager service account to be used by Eventarc
+resource "google_project_iam_member" "table_manager_sa_pubsub_subscriber" {
+  project = var.project_id
+  role    = "roles/pubsub.subscriber"
+  member  = format("serviceAccount:%s", google_service_account.table_manager_sa.email)
+}
+
+resource "google_project_iam_member" "table_manager_sa_run_invoker" {
+  project = var.project_id
+  role    = "roles/run.invoker"
+  member  = format("serviceAccount:%s", google_service_account.table_manager_sa.email)
+}
