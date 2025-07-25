@@ -53,9 +53,16 @@ gcloud run deploy "$SERVICE_NAME" \
     --startup-timeout=900 \
     --quiet
 
-# The Pub/Sub trigger is now managed via Eventarc by Terraform.
-# We no longer need to specify it here as Terraform handles the connection
-# between the Pub/Sub topic and the Cloud Run service.
+# After deploying the service, create the Eventarc trigger
+echo "🔗 Creating Eventarc trigger to connect Pub/Sub to the Cloud Run service..."
+gcloud eventarc triggers create "${SERVICE_NAME}-trigger" \
+    --location="$REGION" \
+    --destination-run-service="$SERVICE_NAME" \
+    --destination-run-region="$REGION" \
+    --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished" \
+    --transport-topic="projects/${PROJECT_ID}/topics/${ENVIRONMENT}-backend-events-topic" \
+    --service-account="${PROJECT_ID}-compute@developer.gserviceaccount.com" \
+    --quiet
 
-echo "✅ Cloud Function service deployed successfully!"
-echo "📝 The service is now ready to receive events from the '${ENVIRONMENT}-backend-events-topic' Pub/Sub topic via its Eventarc trigger." 
+echo "✅ Cloud Function service and trigger deployed successfully!"
+echo "📝 The service is now ready to receive events from the '${ENVIRONMENT}-backend-events-topic' Pub/Sub topic." 

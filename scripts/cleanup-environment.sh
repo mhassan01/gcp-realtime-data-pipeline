@@ -75,7 +75,19 @@ else
   echo "ℹ️  No Cloud Functions found"
 fi
 
-# 3. Delete Cloud Run services
+# 3. Delete Eventarc Triggers
+echo "🔗 Deleting Eventarc triggers..."
+EVENTARC_TRIGGERS=$(gcloud eventarc triggers list --location=$REGION --filter="name~${ENVIRONMENT}" --format="value(name)" 2>/dev/null || echo "")
+if [ ! -z "$EVENTARC_TRIGGERS" ]; then
+  for trigger in $EVENTARC_TRIGGERS; do
+    trigger_name=$(basename "$trigger")
+    safe_delete "Delete Eventarc trigger $trigger_name" "gcloud eventarc triggers delete $trigger_name --location=$REGION --quiet"
+  done
+else
+  echo "ℹ️  No Eventarc triggers found"
+fi
+
+# 4. Delete Cloud Run services
 echo "🏃 Deleting Cloud Run services..."
 CR_SERVICES=$(gcloud run services list --regions=$REGION --filter="metadata.name~${ENVIRONMENT}" --format="value(metadata.name)" 2>/dev/null || echo "")
 if [ ! -z "$CR_SERVICES" ]; then
@@ -86,7 +98,7 @@ else
   echo "ℹ️  No Cloud Run services found"
 fi
 
-# 4. Delete BigQuery datasets
+# 5. Delete BigQuery datasets
 echo "📊 Deleting BigQuery datasets..."
 BQ_DATASETS=$(bq ls --filter="labels.environment:${ENVIRONMENT}" --format=value | grep "${ENVIRONMENT}" 2>/dev/null || echo "")
 if [ ! -z "$BQ_DATASETS" ]; then
@@ -98,7 +110,7 @@ else
   safe_delete "Delete BigQuery dataset ${ENVIRONMENT}_events_dataset" "bq rm -r -f -d $PROJECT_ID:${ENVIRONMENT}_events_dataset"
 fi
 
-# 5. Delete Pub/Sub subscriptions first (before topics)
+# 6. Delete Pub/Sub subscriptions first (before topics)
 echo "📨 Deleting Pub/Sub subscriptions..."
 PUBSUB_SUBS=$(gcloud pubsub subscriptions list --filter="name~${ENVIRONMENT}" --format="value(name)" 2>/dev/null || echo "")
 if [ ! -z "$PUBSUB_SUBS" ]; then
@@ -110,7 +122,7 @@ else
   echo "ℹ️  No Pub/Sub subscriptions found"
 fi
 
-# 6. Delete Pub/Sub topics
+# 7. Delete Pub/Sub topics
 echo "📨 Deleting Pub/Sub topics..."
 PUBSUB_TOPICS=$(gcloud pubsub topics list --filter="name~${ENVIRONMENT}" --format="value(name)" 2>/dev/null || echo "")
 if [ ! -z "$PUBSUB_TOPICS" ]; then
@@ -122,7 +134,7 @@ else
   echo "ℹ️  No Pub/Sub topics found"
 fi
 
-# 7. Delete Storage buckets
+# 8. Delete Storage buckets
 echo "🪣 Deleting Storage buckets..."
 STORAGE_BUCKETS=$(gsutil ls -p $PROJECT_ID | grep -E "(${ENVIRONMENT}|terraform-state)" | sed 's|gs://||' | sed 's|/||' 2>/dev/null || echo "")
 if [ ! -z "$STORAGE_BUCKETS" ]; then
@@ -133,7 +145,7 @@ else
   echo "ℹ️  No Storage buckets found"
 fi
 
-# 8. Remove IAM policy bindings (before deleting service accounts)
+# 9. Remove IAM policy bindings (before deleting service accounts)
 echo "🔐 Cleaning IAM policy bindings..."
 SERVICE_ACCOUNTS=$(gcloud iam service-accounts list --filter="email~${ENVIRONMENT}" --format="value(email)" 2>/dev/null || echo "")
 if [ ! -z "$SERVICE_ACCOUNTS" ]; then
@@ -161,7 +173,7 @@ if [ ! -z "$SERVICE_ACCOUNTS" ]; then
   done
 fi
 
-# 9. Delete Service Accounts
+# 10. Delete Service Accounts
 echo "👤 Deleting Service Accounts..."
 if [ ! -z "$SERVICE_ACCOUNTS" ]; then
   for sa_email in $SERVICE_ACCOUNTS; do
@@ -171,7 +183,7 @@ else
   echo "ℹ️  No Service Accounts found"
 fi
 
-# 10. Clean up Container Registry images
+# 11. Clean up Container Registry images
 echo "🐳 Deleting Container Registry images..."
 CR_IMAGES=$(gcloud container images list --repository=gcr.io/$PROJECT_ID --filter="name~${ENVIRONMENT}" --format="value(name)" 2>/dev/null || echo "")
 if [ ! -z "$CR_IMAGES" ]; then
@@ -182,7 +194,7 @@ else
   echo "ℹ️  No Container Registry images found"
 fi
 
-# 11. Clean local terraform state
+# 12. Clean local terraform state
 echo "🧹 Cleaning local terraform state..."
 rm -rf terraform/.terraform/
 rm -f terraform/.terraform.lock.hcl
@@ -190,7 +202,7 @@ rm -f terraform/terraform.tfstate*
 rm -f terraform/import.tf
 echo "✅ Local terraform state cleaned"
 
-# 12. Wait for resource deletion propagation
+# 13. Wait for resource deletion propagation
 echo "⏳ Waiting for resource deletion to propagate..."
 sleep 45
 
