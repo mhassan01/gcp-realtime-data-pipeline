@@ -8,7 +8,7 @@ set -e
 # Configuration
 PROJECT_ID=${1:-"fabled-web-172810"}
 ENVIRONMENT=${2:-"dev"}
-TOPIC_NAME="${ENVIRONMENT}-backend-events-topic"
+TOPIC_NAME="backend-events-topic"
 
 echo "🧪 Testing BigQuery Table Creation via Cloud Function"
 echo "Project ID: $PROJECT_ID"
@@ -28,7 +28,7 @@ publish_and_wait() {
 
 # Test 1: Order event (should create orders table)
 ORDER_EVENT='{
-    "event_type": "order_created",
+    "event_type": "order",
     "order_id": "test-order-001",
     "customer_id": "test-customer-123",
     "order_date": "2024-01-15T10:30:00Z",
@@ -58,7 +58,7 @@ publish_and_wait "$ORDER_EVENT" "order event"
 
 # Test 2: Inventory event (should create inventory table)
 INVENTORY_EVENT='{
-    "event_type": "inventory_updated",
+    "event_type": "inventory",
     "inventory_id": "inv-test-001",
     "product_id": "prod-001",
     "warehouse_id": "wh-us-central",
@@ -76,7 +76,7 @@ publish_and_wait "$INVENTORY_EVENT" "inventory event"
 
 # Test 3: User activity event (should create user_activity table)
 USER_ACTIVITY_EVENT='{
-    "event_type": "page_view",
+    "event_type": "user_activity",
     "user_id": "user-test-123",
     "session_id": "sess-abc-123",
     "activity_type": "product_page",
