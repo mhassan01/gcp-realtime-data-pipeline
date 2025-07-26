@@ -94,6 +94,12 @@ jobs:
         chmod +x ./scripts/deploy-cloud-function.sh
         ./scripts/deploy-cloud-function.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }}
 
+    - name: 🏃 Deploy Event Generator
+      run: |
+        echo "🏃 Deploying Event Generator Cloud Run service..."
+        chmod +x ./scripts/deploy-event-generator.sh
+        ./scripts/deploy-event-generator.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
+
     - name: 🔄 Deploy Dataflow Template
       run: |
         echo "🔄 Building and deploying Dataflow template..."
