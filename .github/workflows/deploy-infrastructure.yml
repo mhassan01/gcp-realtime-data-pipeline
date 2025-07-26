@@ -132,6 +132,62 @@ jobs:
         
         echo "🎉 All services verified successfully!"
 
+    # ==============================
+    # PHASE 5: START TEST LOAD
+    # ==============================
+    - name: 🧪 Start Medium Test Load
+      run: |
+        echo "🧪 Starting medium test load to verify complete pipeline..."
+        
+        # Get Event Generator service URL
+        EVENT_GENERATOR_URL=$(gcloud run services describe ${{ env.ENVIRONMENT }}-event-generator --region=${{ env.REGION }} --format="value(status.url)")
+        echo "📍 Event Generator URL: $EVENT_GENERATOR_URL"
+        
+        # Wait for services to be fully ready
+        sleep 30
+        
+        # Start a medium test load scenario
+        echo "🚀 Starting medium test load (5 minutes, 60 events/minute)..."
+        curl -X POST "$EVENT_GENERATOR_URL/generate/start" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "events_per_minute": 60,
+            "duration_minutes": 5,
+            "event_types": ["order", "inventory", "user_activity"]
+          }' \
+          --fail --show-error --silent | jq .
+        
+        echo "✅ Medium test load started successfully!"
+        echo "📊 This will generate 300 events over 5 minutes to test the pipeline"
+        echo "🔍 Events will flow: Event Generator → Pub/Sub → Table Manager → BigQuery"
+
+    - name: 📊 Monitor Pipeline Health
+      run: |
+        echo "📊 Monitoring pipeline health for 2 minutes..."
+        
+        EVENT_GENERATOR_URL=$(gcloud run services describe ${{ env.ENVIRONMENT }}-event-generator --region=${{ env.REGION }} --format="value(status.url)")
+        
+        # Check pipeline components every 30 seconds for 2 minutes
+        for i in {1..4}; do
+          echo "🔍 Health check $i/4..."
+          
+          # Check Event Generator health
+          curl -f "$EVENT_GENERATOR_URL/health" --silent | jq .
+          
+          # Check Table Manager health  
+          TABLE_MANAGER_URL=$(gcloud run services describe ${{ env.ENVIRONMENT }}-table-manager --region=${{ env.REGION }} --format="value(status.url)")
+          curl -f "$TABLE_MANAGER_URL/health" --silent | jq .
+          
+          # Check if tables are being created
+          DATASET="${{ env.ENVIRONMENT }}_events_dataset"
+          TABLES=$(bq ls --project_id=${{ env.PROJECT_ID }} $DATASET --format="value(tableId)" 2>/dev/null | wc -l)
+          echo "📊 BigQuery tables created: $TABLES"
+          
+          sleep 30
+        done
+        
+        echo "✅ Pipeline monitoring completed!"
+
   # ==============================
   # CLEANUP ON FAILURE
   # ==============================

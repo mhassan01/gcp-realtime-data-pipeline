@@ -215,3 +215,10 @@ resource "google_project_iam_member" "table_manager_sa_run_invoker" {
   role    = "roles/run.invoker"
   member  = format("serviceAccount:%s", google_service_account.table_manager_sa.email)
 }
+
+# IAM permissions for event generator service account to publish to Pub/Sub
+resource "google_project_iam_member" "event_generator_sa_pubsub_publisher" {
+  project = var.project_id
+  role    = "roles/pubsub.publisher"
+  member  = format("serviceAccount:%s", google_service_account.event_generator_sa.email)
+}

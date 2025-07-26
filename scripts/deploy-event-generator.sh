@@ -64,6 +64,7 @@ gcloud run deploy $SERVICE_NAME \
     --region $REGION \
     --allow-unauthenticated \
     --set-env-vars PROJECT_ID=$PROJECT_ID,ENVIRONMENT=$ENVIRONMENT \
+    --service-account="${ENVIRONMENT}-event-generator-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
     --memory 512Mi \
     --cpu 1 \
     --concurrency 80 \
@@ -73,7 +74,6 @@ gcloud run deploy $SERVICE_NAME \
     --port 8080 \
     --execution-environment gen2 \
     --cpu-boost \
-    --startup-timeout 900 \
     --quiet
 
 # Get service URL
