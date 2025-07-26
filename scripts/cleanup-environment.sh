@@ -122,6 +122,9 @@ else
   echo "ℹ️  No Pub/Sub subscriptions found"
 fi
 
+# Also delete the specific backend-events subscription
+safe_delete "Delete backend-events-topic-sub" "gcloud pubsub subscriptions delete backend-events-topic-sub"
+
 # 7. Delete Pub/Sub topics
 echo "📨 Deleting Pub/Sub topics..."
 PUBSUB_TOPICS=$(gcloud pubsub topics list --filter="name~${ENVIRONMENT}" --format="value(name)" 2>/dev/null || echo "")
@@ -133,6 +136,9 @@ if [ ! -z "$PUBSUB_TOPICS" ]; then
 else
   echo "ℹ️  No Pub/Sub topics found"
 fi
+
+# Also delete the specific backend-events topic
+safe_delete "Delete backend-events-topic" "gcloud pubsub topics delete backend-events-topic"
 
 # 8. Delete Storage buckets
 echo "🪣 Deleting Storage buckets..."

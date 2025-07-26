@@ -59,7 +59,7 @@ gcloud eventarc triggers create "${SERVICE_NAME}-trigger" \
     --destination-run-service="$SERVICE_NAME" \
     --destination-run-region="$REGION" \
     --event-filters="type=google.cloud.pubsub.topic.v1.messagePublished" \
-    --transport-topic="projects/${PROJECT_ID}/topics/${ENVIRONMENT}-backend-events-topic" \
+    --transport-topic="projects/${PROJECT_ID}/topics/backend-events-topic" \
     --service-account="${ENVIRONMENT}-table-manager-sa@${PROJECT_ID}.iam.gserviceaccount.com" \
     --quiet
 

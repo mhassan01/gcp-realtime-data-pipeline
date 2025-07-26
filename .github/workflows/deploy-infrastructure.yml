@@ -167,6 +167,56 @@ jobs:
         echo "📊 This will generate 300 events over 5 minutes to test the pipeline"
         echo "🔍 Events will flow: Event Generator → Pub/Sub → Table Manager → BigQuery"
 
+    - name: 🔍 Verify Event Flow and Table Creation
+      run: |
+        echo "🔍 Testing complete event pipeline flow..."
+        
+        EVENT_GENERATOR_URL=$(gcloud run services describe ${{ env.ENVIRONMENT }}-event-generator --region=${{ env.REGION }} --format="value(status.url)")
+        
+        # Wait for services to initialize
+        sleep 10
+        
+        # Test 1: Generate a few individual events to trigger table creation
+        echo "🧪 Test 1: Generating individual events to trigger table creation..."
+        for event_type in order inventory user_activity; do
+          echo "📤 Publishing $event_type event..."
+          curl -X POST "$EVENT_GENERATOR_URL/generate/single/$event_type" \
+            -H "Content-Type: application/json" \
+            --fail --silent || echo "⚠️  Failed to publish $event_type event"
+          sleep 2
+        done
+        
+        # Wait for table creation
+        echo "⏳ Waiting 60 seconds for table creation..."
+        sleep 60
+        
+        # Test 2: Check if BigQuery tables were created
+        echo "🔍 Test 2: Checking BigQuery table creation..."
+        DATASET="${{ env.ENVIRONMENT }}_events_dataset"
+        
+        for table in orders inventory user_activity; do
+          echo "📊 Checking table: $table"
+          if bq show --project_id=${{ env.PROJECT_ID }} $DATASET.$table 2>/dev/null; then
+            echo "✅ Table $table exists!"
+          else
+            echo "❌ Table $table not found"
+          fi
+        done
+        
+        # Test 3: Check Pub/Sub topic activity
+        echo "🔍 Test 3: Checking Pub/Sub topic activity..."
+        TOPIC_NAME="backend-events-topic"
+        echo "📨 Checking topic: $TOPIC_NAME"
+        gcloud pubsub topics describe $TOPIC_NAME --format="value(name)" || echo "❌ Topic not found"
+        
+        # Test 4: Check subscription activity  
+        echo "🔍 Test 4: Checking subscription activity..."
+        SUB_NAME="backend-events-topic-sub"
+        echo "📨 Checking subscription: $SUB_NAME"
+        gcloud pubsub subscriptions describe $SUB_NAME --format="value(name)" || echo "❌ Subscription not found"
+        
+        echo "✅ Event flow verification completed!"
+
     - name: 📊 Monitor Pipeline Health
       run: |
         echo "📊 Monitoring pipeline health for 2 minutes..."

@@ -53,7 +53,7 @@ class EventGenerator:
     def __init__(self, project_id: str, environment: str = "dev"):
         self.project_id = project_id
         self.environment = environment
-        self.topic_path = get_publisher().topic_path(project_id, f"{environment}-backend-events-topic")
+        self.topic_path = get_publisher().topic_path(project_id, "backend-events-topic")
         
         # Sample data for realistic generation
         self.customers = [f"customer-{i:03d}" for i in range(1, 101)]

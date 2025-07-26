@@ -67,7 +67,7 @@ resource "google_pubsub_topic" "dead_letter" {
 }
 
 resource "google_pubsub_topic" "backend_events" {
-  name = "${var.environment}-backend-events-topic"
+  name = "backend-events-topic"
 
   depends_on = [google_project_service.apis]
 
@@ -79,7 +79,7 @@ resource "google_pubsub_topic" "backend_events" {
 }
 
 resource "google_pubsub_subscription" "backend_events_sub" {
-  name  = "${var.environment}-backend-events-subscription"
+  name  = "backend-events-topic-sub"
   topic = google_pubsub_topic.backend_events.name
 
   ack_deadline_seconds = 600
