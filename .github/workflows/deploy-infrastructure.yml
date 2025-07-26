@@ -128,12 +128,12 @@ jobs:
         echo "🔄 Checking Dataflow jobs..."
         gcloud dataflow jobs list --region=${{ env.REGION }} --filter="name:${{ env.ENVIRONMENT }}-*" --limit=5
         
-        # Check Cloud Function
-        echo "⚡ Checking Cloud Function..."
-        gcloud functions describe ${{ env.ENVIRONMENT }}-table-manager --region=${{ env.REGION }} --format="value(status)"
+        # Check Table Manager Cloud Run Service
+        echo "⚡ Checking Table Manager Cloud Run service..."
+        gcloud run services describe ${{ env.ENVIRONMENT }}-table-manager --region=${{ env.REGION }} --format="value(status.conditions[0].status)"
         
-        # Check Cloud Run Service  
-        echo "🏃 Checking Cloud Run service..."
+        # Check Event Generator Cloud Run Service  
+        echo "🏃 Checking Event Generator Cloud Run service..."
         gcloud run services describe ${{ env.ENVIRONMENT }}-event-generator --region=${{ env.REGION }} --format="value(status.conditions[0].status)"
         
         echo "🎉 All services verified successfully!"
