@@ -70,12 +70,6 @@ jobs:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
         TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
-    - name: 🔄 Deploy Dataflow Template
-      run: |
-        echo "🔄 Building and deploying Dataflow template..."
-        chmod +x ./scripts/deploy-dataflow-template.sh
-        ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
-
     - name: 🚀 Apply Infrastructure
       working-directory: ./terraform
       run: |
@@ -94,6 +88,12 @@ jobs:
     # ==============================
     # PHASE 3: APPLICATION DEPLOYMENT
     # ==============================
+    - name: 🔄 Deploy Dataflow Template
+      run: |
+        echo "🔄 Building and deploying Dataflow template..."
+        chmod +x ./scripts/deploy-dataflow-template.sh
+        ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
+
     - name: ⚡ Deploy Cloud Function
       run: |
         echo "⚡ Deploying BigQuery Table Manager Cloud Function..."
