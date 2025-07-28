@@ -63,12 +63,12 @@ resource "google_pubsub_topic" "dead_letter" {
     environment = var.environment
     managed_by  = "terraform"
     purpose     = "dead-letter"
-  }
+}
 }
 
 resource "google_pubsub_topic" "backend_events" {
   name = "backend-events-topic"
-
+  
   depends_on = [google_project_service.apis]
 
   labels = {
@@ -81,14 +81,14 @@ resource "google_pubsub_topic" "backend_events" {
 resource "google_pubsub_subscription" "backend_events_sub" {
   name  = "backend-events-topic-sub"
   topic = google_pubsub_topic.backend_events.name
-
+  
   ack_deadline_seconds = 600
-
+  
   retry_policy {
     minimum_backoff = "10s"
     maximum_backoff = "300s"
   }
-
+  
   dead_letter_policy {
     dead_letter_topic     = google_pubsub_topic.dead_letter.id
     max_delivery_attempts = 5
@@ -98,14 +98,14 @@ resource "google_pubsub_subscription" "backend_events_sub" {
     environment = var.environment
     managed_by  = "terraform"
     purpose     = "dataflow-subscription"
-  }
+}
 }
 
 # Cloud Storage Buckets
 resource "google_storage_bucket" "raw_events" {
   name     = "${var.project_id}-${var.environment}-raw-events"
   location = var.region
-
+  
   lifecycle_rule {
     condition {
       age = 90
@@ -114,7 +114,7 @@ resource "google_storage_bucket" "raw_events" {
       type = "Delete"
     }
   }
-
+  
   versioning {
     enabled = true
   }
@@ -131,7 +131,7 @@ resource "google_storage_bucket" "raw_events" {
 resource "google_storage_bucket" "dataflow_temp" {
   name     = "${var.project_id}-${var.environment}-dataflow-temp"
   location = var.region
-
+  
   lifecycle_rule {
     condition {
       age = 1
@@ -186,9 +186,9 @@ resource "google_bigquery_dataset" "events_dataset" {
   friendly_name = "Events Dataset (${var.environment})"
   description   = "Dataset for storing processed events"
   location      = var.region
-
+  
   default_table_expiration_ms = 7776000000 # 90 days
-
+  
   access {
     role          = "OWNER"
     user_by_email = google_service_account.dataflow_sa.email
@@ -200,7 +200,7 @@ resource "google_bigquery_dataset" "events_dataset" {
     environment = var.environment
     managed_by  = "terraform"
     purpose     = "events-data"
-  }
+        }
 }
 
 # IAM permissions for table-manager service account to be used by Eventarc
@@ -221,4 +221,65 @@ resource "google_project_iam_member" "event_generator_sa_pubsub_publisher" {
   project = var.project_id
   role    = "roles/pubsub.publisher"
   member  = format("serviceAccount:%s", google_service_account.event_generator_sa.email)
+}
+
+# IAM for Dataflow Service Account
+resource "google_project_iam_member" "dataflow_sa_dataflow_worker" {
+  project = var.project_id
+  role    = "roles/dataflow.worker"
+  member  = format("serviceAccount:%s", google_service_account.dataflow_sa.email)
+}
+
+resource "google_project_iam_member" "dataflow_sa_pubsub_subscriber" {
+  project = var.project_id
+  role    = "roles/pubsub.subscriber"
+  member  = format("serviceAccount:%s", google_service_account.dataflow_sa.email)
+}
+
+resource "google_project_iam_member" "dataflow_sa_bigquery_dataEditor" {
+  project = var.project_id
+  role    = "roles/bigquery.dataEditor"
+  member  = format("serviceAccount:%s", google_service_account.dataflow_sa.email)
+}
+
+resource "google_project_iam_member" "dataflow_sa_storage_objectAdmin" {
+  project = var.project_id
+  role    = "roles/storage.objectAdmin"
+  member  = format("serviceAccount:%s", google_service_account.dataflow_sa.email)
+}
+
+# Dataflow Streaming Job
+resource "google_dataflow_job" "streaming_pipeline" {
+  name                    = "${var.environment}-realtime-data-pipeline"
+  template_gcs_path      = "gs://${google_storage_bucket.dataflow_templates.name}/templates/streaming-pipeline.json"
+  temp_gcs_location      = "gs://${google_storage_bucket.dataflow_temp.name}/temp"
+  region                 = var.region
+  on_delete              = "cancel"
+  max_workers            = 3
+  service_account_email  = google_service_account.dataflow_sa.email
+  
+  parameters = {
+    input_subscription   = google_pubsub_subscription.backend_events_sub.id
+    output_dataset      = google_bigquery_dataset.events_dataset.dataset_id
+    output_gcs_prefix   = "gs://${google_storage_bucket.raw_events.name}/output"
+    project             = var.project_id
+    region              = var.region
+    environment         = var.environment
+  }
+
+  depends_on = [
+    google_storage_bucket.dataflow_templates,
+    google_pubsub_topic.backend_events,
+    google_pubsub_subscription.backend_events_sub,
+    google_bigquery_dataset.events_dataset,
+    google_project_iam_member.dataflow_sa_dataflow_worker,
+    google_project_iam_member.dataflow_sa_pubsub_subscriber,
+    google_project_iam_member.dataflow_sa_bigquery_dataEditor,
+    google_project_iam_member.dataflow_sa_storage_objectAdmin,
+  ]
+  
+  labels = {
+    environment = var.environment
+    managed_by  = "terraform"
+  }
 }

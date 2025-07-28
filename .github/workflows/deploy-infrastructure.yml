@@ -70,6 +70,12 @@ jobs:
         TF_VAR_project_id: ${{ env.PROJECT_ID }}
         TF_VAR_environment: ${{ env.ENVIRONMENT }}
 
+    - name: 🔄 Deploy Dataflow Template
+      run: |
+        echo "🔄 Building and deploying Dataflow template..."
+        chmod +x ./scripts/deploy-dataflow-template.sh
+        ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
+
     - name: 🚀 Apply Infrastructure
       working-directory: ./terraform
       run: |
@@ -99,12 +105,6 @@ jobs:
         echo "🏃 Deploying Event Generator Cloud Run service..."
         chmod +x ./scripts/deploy-event-generator.sh
         ./scripts/deploy-event-generator.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
-
-    - name: 🔄 Deploy Dataflow Template
-      run: |
-        echo "🔄 Building and deploying Dataflow template..."
-        chmod +x ./scripts/deploy-dataflow-template.sh
-        ./scripts/deploy-dataflow-template.sh ${{ env.PROJECT_ID }} ${{ env.ENVIRONMENT }} ${{ env.REGION }}
 
     # ==============================
     # PHASE 4: VERIFICATION
