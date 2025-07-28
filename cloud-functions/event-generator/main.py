@@ -9,6 +9,7 @@ from pydantic import BaseModel
 import random
 from google.cloud import pubsub_v1
 import uuid
+from config import GenerationConfig
 from demo_scenarios import DemoScenarios
 
 # Configure logging
@@ -39,13 +40,6 @@ def get_publisher():
             logger.error(f"Failed to initialize Pub/Sub client: {e}")
             raise
     return publisher
-
-class GenerationConfig(BaseModel):
-    """Configuration for event generation"""
-    events_per_minute: int = 60
-    duration_minutes: int = 10
-    event_types: list = ["order", "inventory", "user_activity"]
-    environment: str = "dev"
 
 class EventGenerator:
     """Event generator with realistic data"""
@@ -350,7 +344,8 @@ async def generate_batch_events(config: GenerationConfig):
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to generate batch events: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate batch: {str(e)}")
+
 
 async def continuous_generation_task(task_id: str, config: GenerationConfig):
     """Background task for continuous event generation"""
@@ -394,14 +389,15 @@ async def continuous_generation_task(task_id: str, config: GenerationConfig):
             generation_tasks[task_id]["status"] = "completed"
             generation_tasks[task_id]["end_time"] = datetime.utcnow().isoformat() + "Z"
             generation_tasks[task_id]["total_events"] = event_count
-            
-        logger.info(f"Continuous generation task {task_id} completed. Generated {event_count} events")
+        
+        logger.info(f"Completed generation task {task_id} with {event_count} events")
         
     except Exception as e:
-        logger.error(f"Continuous generation task {task_id} failed: {e}")
+        logger.error(f"Task {task_id} failed: {e}")
         if task_id in generation_tasks:
             generation_tasks[task_id]["status"] = "failed"
             generation_tasks[task_id]["error"] = str(e)
+
 
 @app.post("/generate/start")
 async def start_continuous_generation(config: GenerationConfig, background_tasks: BackgroundTasks):

@@ -3,7 +3,7 @@ Demo scenarios for event generation with predefined configurations
 """
 
 from typing import Dict, Any
-from main import GenerationConfig
+from config import GenerationConfig
 
 class DemoScenarios:
     """Predefined demo scenarios for different use cases"""
